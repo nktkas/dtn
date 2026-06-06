@@ -3,15 +3,13 @@
 [![JSR](https://jsr.io/badges/@nktkas/dtn)](https://jsr.io/@nktkas/dtn)
 [![coveralls](https://img.shields.io/coverallsCoverage/github/nktkas/dtn)](https://coveralls.io/github/nktkas/dtn)
 
-Deno to Node — build a Deno project into a publish-ready npm package (no bundling).
+Deno to Node — build a Deno project into a Node-compatible project (no bundling).
 
-## Install
+## Install (Deno 2.8+)
 
 ```
 deno add jsr:@nktkas/dtn
 ```
-
-Works only in Deno and requires [`deno transpile`](https://docs.deno.com/runtime/reference/cli/transpile/).
 
 ## Usage
 
@@ -46,7 +44,7 @@ await build({
 
 ## CLI
 
-dtn ships a CLI that reads `./deno.json` and takes the rest as flags: (`--help` lists every flag)
+dtn ships a CLI that reads `./deno.json` and takes the rest as flags (`--help` lists every flag):
 
 ```sh
 deno run -A jsr:@nktkas/dtn/cli --out-dir dist --replace @valibot/valibot=valibot --copy README.md --copy LICENSE
@@ -119,6 +117,32 @@ These valid-Deno cases are unsupported — not detected, with undefined output:
 - **Import-map `scopes` are not supported.**
 - **Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.**
 - **Two remote URLs differing only by a query string collide on one vendored path.**
+
+## Alternatives
+
+### [`deno pack`](https://docs.deno.com/runtime/reference/cli/pack/)
+
+Starting with [Deno 2.8](https://deno.com/blog/v2.8#deno-pack), a similar tool was added to build a Deno project into a
+publication-ready npm package.
+
+But it has some serious (for me) issues:
+
+- To convert a JSR import to its npm equivalent, you must first manually edit `deno.json#imports`.
+- After installing, the npm user needs to
+  [configure the `.npmrc`](https://docs.deno.com/runtime/reference/cli/pack/#specifier-rewriting) file in their project
+  to work with jsr dependencies.
+- [Slow types](https://docs.deno.com/runtime/reference/cli/pack/#allow-slow-types) are not supported; they will be
+  converted to `any`.
+
+### [`dnt`](https://github.com/denoland/dnt)
+
+A popular tool for converting a Deno project into a Node-compatible project.
+
+But it also has a few issues:
+
+- Does not support a mapping from JSR imports to their npm equivalents; requires manual modification of
+  `deno.json#imports` beforehand (https://github.com/denoland/dnt/issues/437)
+- Most likely, active support has been suspended (based on: the latest git commit date and the number of active issues)
 
 ## License
 
