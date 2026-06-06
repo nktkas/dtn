@@ -1,6 +1,7 @@
 # @nktkas/dtn
 
 [![JSR](https://jsr.io/badges/@nktkas/dtn)](https://jsr.io/@nktkas/dtn)
+[![coveralls](https://img.shields.io/coverallsCoverage/github/nktkas/dtn)](https://coveralls.io/github/nktkas/dtn)
 
 Deno to Node — build a Deno project into a publish-ready npm package (no bundling).
 
