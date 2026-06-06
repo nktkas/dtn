@@ -26,5 +26,8 @@
   "fmt": {
     "lineWidth": 120
   },
+  "publish": {
+    "exclude": [".github", "tests"]
+  },
   "lock": false
 }
