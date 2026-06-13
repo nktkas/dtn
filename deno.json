@@ -13,7 +13,7 @@
     "@std/fmt/colors": "jsr:@std/fmt@^1/colors",
     "@std/fs": "jsr:@std/fs@^1",
     "@std/path": "jsr:@std/path@^1",
-    "oxc-parser": "npm:oxc-parser@^0.134",
+    "oxc-parser": "npm:oxc-parser@^0.135.0",
     "oxc-walker": "npm:oxc-walker@^1",
     "sort-package-json": "npm:sort-package-json@^4",
     "type-fest": "npm:type-fest@^5"
