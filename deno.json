@@ -8,7 +8,7 @@
   },
   "imports": {
     "@deno/cache-dir": "jsr:@deno/cache-dir@^0.27",
-    "@deno/graph": "jsr:@deno/graph@^0.108",
+    "@deno/graph": "jsr:@deno/graph@^0.109.0",
     "@std/cli/parse-args": "jsr:@std/cli@^1/parse-args",
     "@std/fmt/colors": "jsr:@std/fmt@^1/colors",
     "@std/fs": "jsr:@std/fs@^1",
