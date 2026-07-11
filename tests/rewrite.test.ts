@@ -1,5 +1,6 @@
 // deno-lint-ignore-file no-import-prefix
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertThrows } from "jsr:@std/assert@1";
+import { BuildError } from "../src/errors.ts";
 import { restoreJsonAttributes, rewriteSpecifiers, sourceMappingComment } from "../src/rewrite.ts";
 
 // Wraps each located specifier in <…> so the test can assert both which specifiers were seen and that only the
@@ -95,20 +96,47 @@ Deno.test("rewriteSpecifiers — leaves non-specifier strings alone", async (t) 
   });
 });
 
+Deno.test("rewriteSpecifiers — a parse failure fails the build instead of shipping unrewritten specifiers", async (t) => {
+  await t.step("a collapsed parse (empty program) throws REWRITE_PARSE_FAILED", () => {
+    // A collapsed parse would otherwise pass through with every specifier silently left as-is.
+    const e = assertThrows(() => rewriteSpecifiers(`import x from ;`, "mod.js", (s) => s), BuildError);
+    assertEquals(e.code, "REWRITE_PARSE_FAILED");
+    assertEquals(e.subject, "mod.js");
+  });
+
+  await t.step(
+    "a recoverable diagnostic with an intact AST does not throw (top-level return is legal CommonJS)",
+    () => {
+      const code = `if (globalThis.skip) return;\nmodule.exports = { x: 1 };\n`;
+      assertEquals(rewriteSpecifiers(code, "legacy.cjs", (s) => s), code);
+    },
+  );
+});
+
 Deno.test("restoreJsonAttributes", async (t) => {
   await t.step('re-adds the with { type: "json" } attribute dropped from declarations', () => {
     assertEquals(
-      restoreJsonAttributes(`import data from "./config.json";`),
+      restoreJsonAttributes(`import data from "./config.json";`, "mod.d.ts"),
       `import data from "./config.json" with { type: "json" };`,
     );
     assertEquals(
-      restoreJsonAttributes(`export * from "./x.json";`),
+      restoreJsonAttributes(`export * from "./x.json";`, "mod.d.ts"),
       `export * from "./x.json" with { type: "json" };`,
     );
   });
 
   await t.step("non-json imports are untouched", () => {
-    assertEquals(restoreJsonAttributes(`import x from "./util.js";`), `import x from "./util.js";`);
+    assertEquals(restoreJsonAttributes(`import x from "./util.js";`, "mod.d.ts"), `import x from "./util.js";`);
+  });
+
+  await t.step("a .json path inside a comment or unrelated string is untouched", () => {
+    const code = `/**\n * Example: import data from "./config.json";\n */\nexport declare const s: string;\n`;
+    assertEquals(restoreJsonAttributes(code, "mod.d.ts"), code);
+  });
+
+  await t.step("an import that already carries the attribute is not doubled", () => {
+    const code = `import data from "./config.json" with { type: "json" };`;
+    assertEquals(restoreJsonAttributes(code, "mod.d.ts"), code);
   });
 });
 

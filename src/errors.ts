@@ -8,7 +8,8 @@ export type BuildErrorCode =
   | "UNSUPPORTED_VENDORED_DEPENDENCY"
   | "UNRESOLVED_SPECIFIER"
   | "MODULE_LOAD_FAILED"
-  | "TRANSPILE_FAILED";
+  | "TRANSPILE_FAILED"
+  | "REWRITE_PARSE_FAILED";
 
 /**
  * A build failure raised by the engine, with a machine-readable {@linkcode code} and, when known, a

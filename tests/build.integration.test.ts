@@ -650,9 +650,8 @@ Deno.test({
   name: "integration — a remote redirect chain is followed to its final module",
   ignore: !NET,
   fn: async () => {
-    // A cache populated by the Deno CLI stores every redirect hop separately, so `@deno/graph` reports a chained redirects table (a → b, b → c).
-    // The engine must follow the chain to its end: stopping at an intermediate hop leaves a dependency that matches no module in the graph.
-    // The fixture pre-caches through `deno cache` into an isolated DENO_DIR — the organic state of a project that was run before being built.
+    // A CLI-populated cache stores each redirect hop separately, so the redirects table chains (a → b, b → c) and
+    // must be followed to its end. The fixture pre-caches via `deno cache` into an isolated DENO_DIR for that state.
     const ac = new AbortController();
     const server = Deno.serve(
       { hostname: "127.0.0.1", port: 0, signal: ac.signal, onListen: () => {} },

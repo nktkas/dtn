@@ -102,8 +102,7 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
   });
 
   // `@deno/graph` records redirects (a versionless or aliased URL → its resolved target) but does not apply them to
-  // dependency edges — and a CLI-populated cache stores one entry per redirect hop, so the table must be followed
-  // transitively, or an intermediate hop matches no module in `graph.modules`.
+  // dependency edges; follow each through the table transitively — a CLI-populated cache stores one entry per hop.
   const follow = (specifier: string | undefined): string | undefined => {
     let current = specifier;
     while (current !== undefined && graph.redirects[current] !== undefined) current = graph.redirects[current];

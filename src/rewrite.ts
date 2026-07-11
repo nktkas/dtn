@@ -8,6 +8,7 @@
 
 import { type Node, type ParseResult, parseSync } from "oxc-parser";
 import { walk } from "oxc-walker";
+import { BuildError } from "./errors.ts";
 
 // ── Specifier locator (oxc) ───────────────────────────────────────────────────
 
@@ -68,6 +69,10 @@ function specifierSpans(program: ParseResult["program"]): Span[] {
  *
  * Only the quoted specifier text is spliced; everything else the transpiler emitted is left untouched.
  *
+ * @param filename Selects the parse dialect (declaration / TypeScript / plain JS) and names the failure subject.
+ *
+ * @throws {BuildError} `REWRITE_PARSE_FAILED` when the parse collapses to an empty program.
+ *
  * @example
  * ```ts
  * // The same `"./util.ts"` appears twice, but only the import specifier is spliced — a look-alike string literal is left as-is.
@@ -76,7 +81,12 @@ function specifierSpans(program: ParseResult["program"]): Span[] {
  * ```
  */
 export function rewriteSpecifiers(code: string, filename: string, rewrite: (specifier: string) => string): string {
-  const { program } = parseSync(filename, code, { lang: dialect(filename) });
+  const { program, errors } = parseSync(filename, code, { lang: dialect(filename) });
+  // oxc reports some errors with the AST intact (e.g. a CommonJS top-level return) — those files must still build.
+  // Only a parse collapsed to an empty program is fatal: it would ship every specifier silently unrewritten.
+  if (errors.length > 0 && program.body.length === 0) {
+    throw new BuildError("REWRITE_PARSE_FAILED", `cannot parse module: ${errors[0].message}`, filename);
+  }
   // Sort by start: the single-cursor splice below is correct only for ascending spans, and oxc does not contract a
   // source-ordered traversal — so sort rather than depend on its current DFS happening to emit spans in order.
   const spans = specifierSpans(program).sort((a, b) => a.start - b.start);
@@ -94,11 +104,42 @@ export function rewriteSpecifiers(code: string, filename: string, rewrite: (spec
 
 // ── Transpile fixups ───────────────────────────────────────────────────
 
-const JSON_IMPORT = /(\bfrom\s*"[^"]*\.json")(\s*;)/g;
+/**
+ * Restores the `with { type: "json" }` attribute on JSON from-imports, which `deno transpile` drops from declarations.
+ *
+ * Sources are located via the parser, so look-alikes inside comments or unrelated strings are never touched.
+ *
+ * @param filename Selects the parse dialect (declaration / TypeScript / plain JS).
+ */
+export function restoreJsonAttributes(code: string, filename: string): string {
+  const { program } = parseSync(filename, code, { lang: dialect(filename) });
 
-/** Restores the `with { type: "json" }` attribute on JSON imports, which `deno transpile` drops from declarations. */
-export function restoreJsonAttributes(code: string): string {
-  return code.replace(JSON_IMPORT, '$1 with { type: "json" }$2');
+  const inserts: number[] = [];
+  walk(program, {
+    enter(node): void {
+      if (
+        node.type !== "ImportDeclaration" &&
+        node.type !== "ExportNamedDeclaration" &&
+        node.type !== "ExportAllDeclaration"
+      ) return;
+      const source = node.source;
+      if (
+        source?.type === "Literal" && typeof source.value === "string" && source.value.endsWith(".json") &&
+        node.attributes.length === 0
+      ) {
+        inserts.push(source.end);
+      }
+    },
+  });
+
+  // Same ordering caveat as in rewriteSpecifiers: sort, do not rely on the walker's traversal order.
+  let out = "";
+  let last = 0;
+  for (const at of inserts.sort((a, b) => a - b)) {
+    out += code.slice(last, at) + ` with { type: "json" }`;
+    last = at;
+  }
+  return out + code.slice(last);
 }
 
 /** The trailing `//# sourceMappingURL=…` comment `deno transpile` omits when emitting a separate source map. */

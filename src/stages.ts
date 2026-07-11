@@ -117,17 +117,35 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
 
 // ── Stage 3: rewrite ─────────────────────────────────────────────────────────
 
-/** Rewrites every emitted specifier to its Node form and applies the declaration and source-map fixups. */
+/**
+ * Rewrites every emitted specifier to its Node form and applies the declaration and source-map fixups.
+ *
+ * @throws {BuildError} `REWRITE_PARSE_FAILED` when an emitted module cannot be parsed.
+ */
 export async function rewriteStage(analysis: Analysis): Promise<void> {
-  const { plan, specifiers } = analysis;
+  const { plan, specifiers, vendoredCode, vendoredCopies } = analysis;
+
+  // vendorStage already finalized these files' non-relative specifiers; re-resolving them would let a same-named
+  // import-map alias capture the finished output. Only the deferred relative `.ts` → `.js` flip still applies.
+  const vendorEmitted = new Set<string>(vendoredCopies.values());
+  for (const rel of vendoredCode.values()) {
+    vendorEmitted.add(rel);
+    vendorEmitted.add(rel.replace(/\.js$/, ".d.ts"));
+  }
 
   for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".cjs", ".ts"])) {
     const fromRel = toPosix(relative(plan.codeDir, path));
     const isDts = path.endsWith(".d.ts");
 
     let code = await fs.readText(path);
-    code = rewriteSpecifiers(code, path, (spec) => rewriteForNode(spec, fromRel, specifiers));
-    if (isDts) code = restoreJsonAttributes(code);
+    code = rewriteSpecifiers(
+      code,
+      path,
+      vendorEmitted.has(fromRel)
+        ? (spec) => isRelative(spec) ? relativeToNode(spec) : spec
+        : (spec) => rewriteForNode(spec, fromRel, specifiers),
+    );
+    if (isDts) code = restoreJsonAttributes(code, path);
 
     // `deno transpile` omits the `sourceMappingURL` comment for a separate map; add it.
     if (!isDts && plan.sourceMap === "separate") {
@@ -138,10 +156,14 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
   }
 }
 
+/** A relative specifier's Node form: `.ts` → `.js`; a `.d.ts` is copied verbatim (no `.js` twin), so it stays. */
+function relativeToNode(spec: string): string {
+  return spec.endsWith(".d.ts") ? spec : tsToJs(spec);
+}
+
 /** One specifier → its Node form: relative `.ts`→`.js`, vendored → relative path, external → npm name. */
 function rewriteForNode(spec: string, fromRel: string, specifiers: SpecifierIndex): string {
-  // A relative `.d.ts` is copied verbatim (no `.js` twin), so keep it — rewriting to `.d.js` would dangle.
-  if (isRelative(spec)) return spec.endsWith(".d.ts") ? spec : tsToJs(spec);
+  if (isRelative(spec)) return relativeToNode(spec);
   const target = specifiers.resolve(spec);
   if (target === null) return spec; // `node:` builtins and already-bare externals
   // A vendored dep and a local-file alias both resolve to a package file addressed by a relative path; only an npm
