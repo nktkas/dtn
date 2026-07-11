@@ -537,6 +537,13 @@ Deno.test("integration — the local pass inherits the project's compilerOptions
         assert(code !== 0, "a compilerOptions violation in the author's own code must fail the build");
         assertStringIncludes(stderr, "DTN_BUILD_ERROR_CODE=TRANSPILE_FAILED");
       });
+
+      await t.step("the compiler diagnostic leads the error message; the command echo trails it", () => {
+        const diag = stderr.indexOf("TS6133");
+        const echo = stderr.indexOf("exited with");
+        assert(diag !== -1 && echo !== -1, stderr);
+        assert(diag < echo, "the diagnostic must not be buried under the command echo");
+      });
     },
   );
 });

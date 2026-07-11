@@ -115,7 +115,8 @@ async function run(cmd: string, args: string[], cwd: string): Promise<void> {
     .output();
   if (code !== 0) {
     const dec = new TextDecoder();
-    const detail = [dec.decode(stdout), dec.decode(stderr)].filter((s) => s.length > 0).join("\n");
-    throw new Error(`${cmd} ${args.join(" ")} exited with ${code}\n${detail}`);
+    // Diagnostics first: the command echo grows with the file list and must not bury them.
+    const parts = [dec.decode(stdout), dec.decode(stderr), `(${cmd} ${args.join(" ")} exited with ${code})`];
+    throw new Error(parts.filter((s) => s.length > 0).join("\n"));
   }
 }

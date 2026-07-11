@@ -54,6 +54,7 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  * - The `deno.json` import map's `scopes` are not supported.
  * - Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.
  * - Two remote URLs that differ only by a query string collide on one vendored path.
+ * - Two version requirements for one npm package collide on a single `dependencies` entry; which wins is undefined.
  *
  * @throws {BuildError} `INVALID_EXPORTS` when `deno.exports` is empty, an entry is not a `.ts`/`.d.ts` source, or a
  *                       wildcard export has no single matching `*` in subpath and source.
