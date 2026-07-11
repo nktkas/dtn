@@ -520,6 +520,42 @@ Deno.test("integration — the CLI reads deno.json, parses flags, and builds the
   }
 });
 
+Deno.test("integration — CLI --deno-json in a subdirectory: config paths follow the config, outDir follows cwd", async () => {
+  const cli = fromFileUrl(new URL("../cli.ts", import.meta.url));
+  const config = fromFileUrl(new URL("../deno.json", import.meta.url));
+  const dir = await Deno.makeTempDir({ prefix: "dtn-cli-" });
+  try {
+    await Deno.mkdir(join(dir, "packages/lib/src/sub"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "packages/lib/deno.json"),
+      JSON.stringify({
+        name: "@fx/rebase",
+        version: "1.0.0",
+        exports: "./src/mod.ts",
+        imports: { "$util": "./src/util.ts", "@dir/": "./src/sub/" },
+      }),
+    );
+    await Deno.writeTextFile(join(dir, "packages/lib/src/util.ts"), "export const u: number = 1;\n");
+    await Deno.writeTextFile(join(dir, "packages/lib/src/sub/helper.ts"), "export const h: number = 2;\n");
+    await Deno.writeTextFile(
+      join(dir, "packages/lib/src/mod.ts"),
+      `import { u } from "$util";\nimport { h } from "@dir/helper.ts";\nexport const v: number = u + h;\n`,
+    );
+    const { code, stderr } = await new Deno.Command("deno", {
+      args: ["run", "-A", "--config", config, cli, "--deno-json", "packages/lib/deno.json", "--out-dir", "dist"],
+      cwd: dir,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(code, 0, new TextDecoder().decode(stderr));
+    assert(await exists(join(dir, "dist/esm/mod.js")), "mod.js missing");
+    assert(await exists(join(dir, "dist/esm/util.js")), "the import-map-aliased util.js missing");
+    assert(await exists(join(dir, "dist/esm/sub/helper.js")), "the folder-prefix-aliased helper.js missing");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("integration — the local pass inherits the project's compilerOptions (a violation fails the build)", async (t) => {
   await withBuild(
     {

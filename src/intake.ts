@@ -9,6 +9,9 @@ import type { PackageJson } from "type-fest";
 import { BuildError } from "./errors.ts";
 import { parseRegistry } from "./spec.ts";
 
+/** Source-map modes accepted by {@linkcode BuildConfig.sourceMap}. */
+export const SOURCE_MAP_MODES = ["inline", "separate", "none"] as const;
+
 /** The `deno.json` configuration for the package. */
 export interface DenoConfig {
   name: string;
@@ -44,7 +47,7 @@ export interface BuildConfig {
    *
    * @default "separate"
    */
-  sourceMap?: "inline" | "separate" | "none";
+  sourceMap?: (typeof SOURCE_MAP_MODES)[number];
   /**
    * Directory under the package code root that holds inlined (vendored) dependencies.
    *
@@ -69,7 +72,7 @@ export interface Plan {
   npmReplacements: Record<string, string>;
   packageJson: PackageJson;
   copyFiles: string[];
-  sourceMap: "inline" | "separate" | "none";
+  sourceMap: (typeof SOURCE_MAP_MODES)[number];
   depsDir: string;
 }
 
