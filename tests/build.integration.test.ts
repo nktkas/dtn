@@ -520,6 +520,27 @@ Deno.test("integration — the CLI reads deno.json, parses flags, and builds the
   }
 });
 
+Deno.test("integration — the local pass inherits the project's compilerOptions (a violation fails the build)", async (t) => {
+  await withBuild(
+    {
+      "deno.json": JSON.stringify({
+        name: "@fx/strict",
+        version: "1.0.0",
+        exports: { ".": "./src/mod.ts" },
+        compilerOptions: { noUnusedLocals: true },
+      }),
+      "src/mod.ts": `export function f(): number {\n  const unused = 1;\n  return 2;\n}\n`,
+    },
+    { outDir: "dist" },
+    async ({ code, stderr }) => {
+      await t.step("fails as TRANSPILE_FAILED, exactly as deno check would", () => {
+        assert(code !== 0, "a compilerOptions violation in the author's own code must fail the build");
+        assertStringIncludes(stderr, "DTN_BUILD_ERROR_CODE=TRANSPILE_FAILED");
+      });
+    },
+  );
+});
+
 // ── Networked fixtures (gated behind DTN_INTEGRATION) ────────────────────────
 
 Deno.test({
@@ -637,6 +658,96 @@ Deno.test({
           assertStringIncludes(dts, "export declare const x: Config;"); // type preserved, not `any`
           const js = await Deno.readTextFile(join(dir, "dist/esm/mod.js"));
           assert(!js.includes("types.d.ts"), "a type-only import must be erased from the emitted .js");
+        },
+      );
+    } finally {
+      ac.abort();
+      await server.finished;
+    }
+  },
+});
+
+Deno.test({
+  name: "integration — the vendor pass is hermetic: consumer compilerOptions must not fail third-party code",
+  ignore: !NET,
+  fn: async () => {
+    // Third-party code must never be type-checked under the CONSUMER's compilerOptions — neither by the vendor pass
+    // (which discovers the user's deno.json from its cwd ancestors) nor by the local declaration pass (which reaches
+    // vendored modules while checking the author's sources). Two files pin the multi-module case.
+    const ts = { headers: { "content-type": "application/typescript; charset=utf-8" } };
+    const ac = new AbortController();
+    const server = Deno.serve(
+      { hostname: "127.0.0.1", port: 0, signal: ac.signal, onListen: () => {} },
+      (req) => {
+        const path = new URL(req.url).pathname;
+        if (path === "/dep.ts") {
+          return new Response(
+            `import { util } from "./util.ts";\nexport function helper(): number {\n  const unused = 1;\n  return util();\n}\n`,
+            ts,
+          );
+        }
+        if (path === "/util.ts") {
+          return new Response(`export function util(): number {\n  const unusedToo = 2;\n  return 3;\n}\n`, ts);
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { hostname, port } = server.addr as Deno.NetAddr;
+    try {
+      await withBuild(
+        {
+          "deno.json": JSON.stringify({
+            name: "@fx/hermetic",
+            version: "1.0.0",
+            exports: { ".": "./src/mod.ts" },
+            compilerOptions: { noUnusedLocals: true },
+          }),
+          "src/mod.ts": `export { helper } from "http://${hostname}:${port}/dep.ts";\n`,
+        },
+        { outDir: "dist" },
+        async ({ code, stderr, dir }) => {
+          assertEquals(code, 0, stderr);
+          assert(await exists(join(dir, `dist/esm/_deps/${hostname}:${port}/dep.js`)), "vendored dep.js missing");
+          assert(await exists(join(dir, `dist/esm/_deps/${hostname}:${port}/util.js`)), "vendored util.js missing");
+        },
+      );
+    } finally {
+      ac.abort();
+      await server.finished;
+    }
+  },
+});
+
+Deno.test({
+  name: "integration — a vendored .js copy is also exempt from consumer compilerOptions (checkJs)",
+  ignore: !NET,
+  fn: async () => {
+    const ac = new AbortController();
+    const server = Deno.serve(
+      { hostname: "127.0.0.1", port: 0, signal: ac.signal, onListen: () => {} },
+      () =>
+        new Response(`export function helper() {\n  const unused = 1;\n  return 2;\n}\n`, {
+          headers: { "content-type": "text/javascript; charset=utf-8" },
+        }),
+    );
+    const { hostname, port } = server.addr as Deno.NetAddr;
+    try {
+      await withBuild(
+        {
+          "deno.json": JSON.stringify({
+            name: "@fx/checkjs",
+            version: "1.0.0",
+            exports: { ".": "./src/mod.ts" },
+            compilerOptions: { checkJs: true, noUnusedLocals: true },
+          }),
+          "src/mod.ts": `export { helper } from "http://${hostname}:${port}/dep.js";\n`,
+        },
+        { outDir: "dist" },
+        async ({ code, stderr, dir }) => {
+          assertEquals(code, 0, stderr);
+          // The SHIPPED copy stays clean — @ts-nocheck belongs only to the scratch-tree copy the checker reads.
+          const shipped = await Deno.readTextFile(join(dir, `dist/esm/_deps/${hostname}:${port}/dep.js`));
+          assert(!shipped.includes("@ts-nocheck"), "the shipped vendored copy must not carry @ts-nocheck");
         },
       );
     } finally {

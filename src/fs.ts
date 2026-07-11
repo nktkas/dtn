@@ -38,11 +38,21 @@ export function readText(path: string): Promise<string> {
   return Deno.readTextFile(path);
 }
 
-/** Moves a file into place, creating parent directories; a no-op when the source does not exist. */
-export async function moveIfExists(from: string, to: string): Promise<void> {
-  if (!await exists(from)) return;
+/**
+ * Moves an emitted artifact into place, creating parent directories.
+ *
+ * @throws {BuildError} `TRANSPILE_FAILED` when the artifact was not emitted.
+ */
+export async function moveEmitted(from: string, to: string): Promise<void> {
   await ensureDir(dirname(to));
-  await Deno.rename(from, to);
+  try {
+    await Deno.rename(from, to);
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) {
+      throw new BuildError("TRANSPILE_FAILED", "transpile did not emit expected artifact", from);
+    }
+    throw e;
+  }
 }
 
 /** Copies a single file, creating parent directories. */
@@ -71,6 +81,8 @@ interface TranspileOptions {
   outDir: string;
   cwd: string;
   sourceMap: "inline" | "separate" | "none";
+  /** `"none"` disables the subprocess's auto-discovery of `deno.json`/`deno.lock` from cwd ancestors. */
+  config: "inherit" | "none";
 }
 
 /**
@@ -82,6 +94,7 @@ export async function transpile(options: TranspileOptions): Promise<void> {
   try {
     await run("deno", [
       "transpile",
+      ...(options.config === "none" ? ["--no-config", "--no-lock"] : []),
       "--import-map",
       options.importMap,
       "--declaration",

@@ -108,7 +108,7 @@ try {
 | `UNSUPPORTED_VENDORED_DEPENDENCY` | A vendored dependency cannot be inlined (an unsupported media type, or a hostless URL like `data:`).              |
 | `UNRESOLVED_SPECIFIER`            | A specifier resolves to neither a vendored file nor an npm package.                                               |
 | `MODULE_LOAD_FAILED`              | A module's source cannot be read from the Deno cache.                                                             |
-| `TRANSPILE_FAILED`                | The `deno transpile` subprocess fails (e.g. a type error in the source).                                          |
+| `TRANSPILE_FAILED`                | The `deno transpile` subprocess fails (e.g. a type error), or does not emit an expected artifact.                 |
 | `REWRITE_PARSE_FAILED`            | An emitted or vendored module cannot be parsed for specifier rewriting.                                           |
 
 ## Limitations

@@ -67,7 +67,8 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  *                       (e.g. `jsr:@valibot/valibot@^1`) instead of its import-map alias.
  * @throws {BuildError} `UNRESOLVED_SPECIFIER` when a specifier resolves to neither a vendored file nor an npm package.
  * @throws {BuildError} `MODULE_LOAD_FAILED` when a module's source cannot be read from the Deno cache.
- * @throws {BuildError} `TRANSPILE_FAILED` when the `deno transpile` subprocess exits non-zero (e.g. a type error).
+ * @throws {BuildError} `TRANSPILE_FAILED` when the `deno transpile` subprocess exits non-zero (e.g. a type error) or
+ *                       does not emit an expected artifact.
  * @throws {BuildError} `REWRITE_PARSE_FAILED` when an emitted or vendored module cannot be parsed for specifier
  *                       rewriting.
  *

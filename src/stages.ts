@@ -11,9 +11,15 @@ import { basename, join, relative } from "@std/path";
 import type { Analysis, SpecifierIndex } from "./analyze.ts";
 import * as fs from "./fs.ts";
 import type { RawGraph } from "./graph.ts";
+import type { Plan } from "./intake.ts";
 import { planPackageJson } from "./pkg.ts";
 import { restoreJsonAttributes, rewriteSpecifiers, sourceMappingComment } from "./rewrite.ts";
 import { isRelative, jsToTs, relSpecifier, toPosix, tsToJs } from "./spec.ts";
+
+/** The artifact extensions `deno transpile --declaration` emits per source, by source-map mode. */
+function emittedExts(sourceMap: Plan["sourceMap"]): string[] {
+  return sourceMap === "separate" ? [".js", ".d.ts", ".js.map"] : [".js", ".d.ts"];
+}
 
 // ── Stage 1: vendor ──────────────────────────────────────────────────────────
 
@@ -53,7 +59,8 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
   for (const [url, rel] of vendoredCopies) {
     const rewritten = rewriteVendored(decoder.decode(await graph.readSource(url)), rel, rel);
     await fs.writeText(join(plan.codeDir, rel), rewritten);
-    await fs.writeText(join(plan.tmpDir, rel), rewritten);
+    // @ts-nocheck for the local declaration pass, which reads the copy for types only (e.g. under checkJs).
+    await fs.writeText(join(plan.tmpDir, rel), `// @ts-nocheck\n${rewritten}`);
   }
 
   const vendorFiles: string[] = [];
@@ -73,7 +80,16 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
       outDir: plan.codeDir,
       cwd: plan.tmpDir,
       sourceMap: plan.sourceMap,
+      // tmpDir sits inside the user's tree: ancestor discovery would type-check third-party code under the CONSUMER's compilerOptions.
+      config: "none",
     });
+
+    // The local declaration pass reads these sources for their types; @ts-nocheck keeps the user's compilerOptions
+    // from re-checking third-party code — Deno itself reports no diagnostics inside remote modules.
+    for (const relTs of vendorFiles) {
+      const path = join(plan.tmpDir, relTs);
+      await fs.writeText(path, `// @ts-nocheck\n${await fs.readText(path)}`);
+    }
   }
 }
 
@@ -99,13 +115,15 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
       outDir: out,
       cwd: plan.repoRoot,
       sourceMap: plan.sourceMap,
+      // The project's own compilerOptions apply to the author's sources, exactly as deno check would.
+      config: "inherit",
     });
 
-    // Mirror each source's emitted `.js` / `.js.map` / `.d.ts` under the code root (the rewrite stage fixes them).
+    // Mirror each source's emitted artifacts under the code root (the rewrite stage fixes them).
     for (const file of localFiles) {
       const from = join(out, relative(plan.repoRoot, file)).replace(/\.ts$/, "");
       const to = join(plan.codeDir, relative(srcRoot, file)).replace(/\.ts$/, "");
-      for (const ext of [".js", ".js.map", ".d.ts"]) await fs.moveIfExists(from + ext, to + ext);
+      for (const ext of emittedExts(plan.sourceMap)) await fs.moveEmitted(from + ext, to + ext);
     }
   }
 
