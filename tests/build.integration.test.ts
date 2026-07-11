@@ -1,8 +1,8 @@
 // deno-lint-ignore-file no-import-prefix
 
-// End-to-end builds through the real `deno transpile` + `@deno/graph`. The offline fixtures need only a local `deno`
-// binary and run on the default `deno test`; the two that need real networking (a localhost server standing in for a
-// remote asset, and a pinned-jsr fetch) are gated behind DTN_INTEGRATION — run them with `deno task test:integration`.
+// End-to-end builds through the real `deno transpile` + `@deno/graph`. Offline and loopback fixtures run on the
+// default `deno test` without external networking; the one fixture that fetches jsr.io is gated behind
+// DTN_INTEGRATION — run it with `deno task test:integration`.
 
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
@@ -11,7 +11,7 @@ const ENGINE = new URL("../mod.ts", import.meta.url).href;
 // Engine modules use bare specifiers (e.g. `@std/path`); loaded by file:// from the fixture's cwd they would not
 // resolve, so point Deno at the engine's own deno.json import map via --config in the driver run below.
 const CONFIG = fromFileUrl(new URL("../deno.json", import.meta.url));
-const NET = Deno.env.get("DTN_INTEGRATION") === "1"; // gates only the two fixtures that need real networking
+const NET = Deno.env.get("DTN_INTEGRATION") === "1"; // gates only the pinned-jsr fixture, which fetches jsr.io
 
 // A static driver: it reads the fixture's deno.json and merges the extra build parameters from a sidecar JSON file,
 // so each fixture is pure data. It runs with cwd = the fixture dir, exactly as a real consumer would invoke build().
@@ -39,7 +39,6 @@ async function withBuild(
   files: Record<string, string>,
   buildCfg: Record<string, unknown>,
   fn: (r: BuildResult) => Promise<void>,
-  env?: Record<string, string>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "dtn-it-" });
   try {
@@ -53,7 +52,6 @@ async function withBuild(
     const { code, stdout, stderr } = await new Deno.Command("deno", {
       args: ["run", "-A", "--config", CONFIG, "driver.ts"],
       cwd: dir,
-      env,
       stdout: "piped",
       stderr: "piped",
     }).output();
@@ -584,11 +582,10 @@ Deno.test("integration — the local pass inherits the project's compilerOptions
   );
 });
 
-// ── Networked fixtures (gated behind DTN_INTEGRATION) ────────────────────────
+// ── Loopback fixtures (a local server stands in for the remote host) ─────────
 
 Deno.test({
   name: "integration — a public type derived from a vendored remote asset is type-checked, not `any`",
-  ignore: !NET,
   fn: async () => {
     // A local server stands in for a remote JSON asset with no npm twin (so it is vendored). The engine must stage the
     // asset into the scratch tree, or the declaration pass cannot resolve it and the inferred type degrades to `any`.
@@ -624,8 +621,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "integration — a remote JavaScript module is vendored under _deps and rewritten (network)",
-  ignore: !NET,
+  name: "integration — a remote JavaScript module is vendored under _deps and rewritten",
   fn: async () => {
     // The engine vendors a remote JS module verbatim (nothing to transpile) and rewrites its specifiers; its types
     // degrade to `any` (accepted). The server serves the module and a relative sibling it imports.
@@ -670,8 +666,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "integration — a remote .d.ts is vendored and its types are preserved (network)",
-  ignore: !NET,
+  name: "integration — a remote .d.ts is vendored and its types are preserved",
   fn: async () => {
     // A remote `.d.ts` is vendored like a JS copy, but it carries real types: the importing module's emitted `.d.ts`
     // keeps the type (not `any`) and points at the vendored declaration, while the runtime `import type` is erased.
@@ -712,7 +707,6 @@ Deno.test({
 
 Deno.test({
   name: "integration — the vendor pass is hermetic: consumer compilerOptions must not fail third-party code",
-  ignore: !NET,
   fn: async () => {
     // Third-party code must never be type-checked under the CONSUMER's compilerOptions — neither by the vendor pass
     // (which discovers the user's deno.json from its cwd ancestors) nor by the local declaration pass (which reaches
@@ -763,7 +757,6 @@ Deno.test({
 
 Deno.test({
   name: "integration — a vendored .js copy is also exempt from consumer compilerOptions (checkJs)",
-  ignore: !NET,
   fn: async () => {
     const ac = new AbortController();
     const server = Deno.serve(
@@ -802,10 +795,9 @@ Deno.test({
 
 Deno.test({
   name: "integration — a remote redirect chain is followed to its final module",
-  ignore: !NET,
   fn: async () => {
     // A CLI-populated cache stores each redirect hop separately, so the redirects table chains (a → b, b → c) and
-    // must be followed to its end. The fixture pre-caches via `deno cache` into an isolated DENO_DIR for that state.
+    // must be followed to its end. The fixture pre-caches via `deno cache` to get that state.
     const ac = new AbortController();
     const server = Deno.serve(
       { hostname: "127.0.0.1", port: 0, signal: ac.signal, onListen: () => {} },
@@ -823,11 +815,9 @@ Deno.test({
       },
     );
     const { hostname, port } = server.addr as Deno.NetAddr;
-    const denoDir = await Deno.makeTempDir({ prefix: "dtn-redirect-cache-" });
     try {
       const cache = await new Deno.Command("deno", {
         args: ["cache", `http://${hostname}:${port}/a.ts`],
-        env: { DENO_DIR: denoDir },
         stdout: "piped",
         stderr: "piped",
       }).output();
@@ -849,15 +839,15 @@ Deno.test({
             `from "./_deps/${hostname}:${port}/c.js"`,
           );
         },
-        { DENO_DIR: denoDir },
       );
     } finally {
       ac.abort();
       await server.finished;
-      await Deno.remove(denoDir, { recursive: true }).catch(() => {});
     }
   },
 });
+
+// ── Real-network fixture (gated behind DTN_INTEGRATION) ──────────────────────
 
 Deno.test({
   name: "integration — vendoring + npm-external + multi-entry (network, pinned jsr)",
