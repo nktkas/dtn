@@ -21,7 +21,9 @@ function emittedExts(sourceMap: Plan["sourceMap"]): string[] {
   return sourceMap === "separate" ? [".js", ".d.ts", ".js.map"] : [".js", ".d.ts"];
 }
 
-// ── Stage 1: vendor ──────────────────────────────────────────────────────────
+// =============================================================================
+// Stage 1: vendor
+// =============================================================================
 
 /**
  * Inlines vendored dependencies: byte assets copied as-is, code rewritten and transpiled, under the code root.
@@ -91,7 +93,9 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
   }
 }
 
-// ── Stage 2: transpile ───────────────────────────────────────────────────────
+// =============================================================================
+// Stage 2: transpile
+// =============================================================================
 
 /**
  * Type-checks and transpiles local `.ts` sources, mirroring the emitted `.js`/`.js.map`/`.d.ts` under the code root;
@@ -131,7 +135,9 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
   }
 }
 
-// ── Stage 3: rewrite ─────────────────────────────────────────────────────────
+// =============================================================================
+// Stage 3: rewrite
+// =============================================================================
 
 /**
  * Rewrites every emitted specifier to its Node form and applies the declaration and source-map fixups.
@@ -187,7 +193,9 @@ function rewriteForNode(spec: string, fromRel: string, specifiers: SpecifierInde
   return relSpecifier(fromRel, target.kind === "vendored" ? target.emit : target.rel);
 }
 
-// ── Stage 4: package ─────────────────────────────────────────────────────────
+// =============================================================================
+// Stage 4: package
+// =============================================================================
 
 /** Writes the generated `package.json` and copies the author's auxiliary files into the package root. */
 export async function packageStage(analysis: Analysis): Promise<void> {

@@ -92,8 +92,9 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
   // A relative import-map target resolves against the import map's own URL — the project's `deno.json`.
   const resolveSpecifier = makeResolver(plan.imports, toFileUrl(join(plan.repoRoot, "deno.json")).href);
 
-  // The cache that feeds createGraph: `@deno/graph` runs as WebAssembly and detaches the buffers it is handed, so
-  // module sources must later be read from a separate, fresh cache instance.
+  // HACK: `@deno/graph` mutates each LoadResponse it is handed (content becomes a plain number[] for wasm), and the
+  // cache memoizes remote responses by object, so a shared instance would replay the mutated content on a later load.
+  // The graph gets its own instance; module sources are read through a separate, fresh one.
   const graphCache = createCache();
   const roots = Object.values(plan.exports).map((source) => toFileUrl(resolve(plan.repoRoot, source)).href);
   const graph = await createGraph(roots, {
@@ -124,7 +125,7 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
     if (loaded?.kind !== "module") {
       throw new BuildError("MODULE_LOAD_FAILED", "cannot read module source from the Deno cache", specifier);
     }
-    return loaded.content as Uint8Array;
+    return typeof loaded.content === "string" ? new TextEncoder().encode(loaded.content) : loaded.content;
   };
 
   return { modules, readSource };

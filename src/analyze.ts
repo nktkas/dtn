@@ -11,7 +11,9 @@ import type { Plan } from "./intake.ts";
 import type { RawGraph, RawMediaType, RawModule } from "./graph.ts";
 import { isRelative, jsrUrlPackage, parseRegistry, parseReplacement, toPosix, tsToJs, vendoredRel } from "./spec.ts";
 
-// ── Classification ──────────────────────────────────────────────────────────
+// =============================================================================
+// Classification
+// =============================================================================
 
 /** Local source media types copied into the package verbatim instead of being transpiled. */
 const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Cjs", "Json", "Dts", "Wasm"]);
@@ -52,8 +54,7 @@ export interface Analysis {
 }
 
 /**
- * Classifies every module reachable from the entry points (not through a replaced package), producing the
- * {@linkcode Analysis}.
+ * Classifies every module reachable from the entry points (not through a replaced package), producing the {@linkcode Analysis}.
  *
  * @throws {BuildError} `UNSUPPORTED_LOCAL_SOURCE` for a local source whose media type the engine does not handle.
  * @throws {BuildError} `UNSUPPORTED_VENDORED_DEPENDENCY` for a vendored dependency the engine cannot inline (an
@@ -137,30 +138,17 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
   const vendoredAssets = new Map<string, string>();
   const localByUrl = new Map<string, string>();
   for (const { module, fate } of reachable) {
-    switch (fate.kind) {
-      case "transpile":
-        localFiles.push(fate.path);
-        localByUrl.set(module.specifier, fate.path);
-        break;
-      case "copy":
-        localCopies.push(fate.path);
-        localByUrl.set(module.specifier, fate.path);
-        break;
-      case "vendorCode":
-        vendoredCode.set(fate.url, { src: fate.src, emit: fate.emit });
-        break;
-      case "vendorCopy":
-        vendoredCopies.set(fate.url, fate.rel);
-        break;
-      case "vendorAsset":
-        vendoredAssets.set(fate.url, fate.rel);
-        break;
-      case "external":
-        break;
-      default: {
-        const _exhaustive: never = fate;
-      }
+    if (fate.kind === "transpile") {
+      localFiles.push(fate.path);
+      localByUrl.set(module.specifier, fate.path);
     }
+    if (fate.kind === "copy") {
+      localCopies.push(fate.path);
+      localByUrl.set(module.specifier, fate.path);
+    }
+    if (fate.kind === "vendorCode") vendoredCode.set(fate.url, { src: fate.src, emit: fate.emit });
+    if (fate.kind === "vendorCopy") vendoredCopies.set(fate.url, fate.rel);
+    if (fate.kind === "vendorAsset") vendoredAssets.set(fate.url, fate.rel);
   }
 
   // `common()` returns a trailing separator when the sources span divergent dirs ("/repo/"); strip it so the package
@@ -302,7 +290,9 @@ function validateSpecifiers(reachable: Array<{ module: RawModule }>, specifiers:
   }
 }
 
-// ── Specifier index ─────────────────────────────────────────────────────────
+// =============================================================================
+// Specifier index
+// =============================================================================
 
 /** Where a non-relative specifier points once the package is built. */
 type SpecTarget =
@@ -342,19 +332,19 @@ interface SpecifierIndexInput {
  * via an import-map alias, or a bare npm name — and builds the import maps the declaration passes need.
  */
 export class SpecifierIndex {
-  readonly #vendored: Map<string, { src: string; emit: string }>;
-  readonly #localAliases: Map<string, { rel: string; source: string }>;
-  readonly #aliases: AliasBinding[];
-  readonly #replacedJsrPackages: Map<string, string>;
-  readonly #npmDeps: Record<string, string>;
+  private readonly _vendored: Map<string, { src: string; emit: string }>;
+  private readonly _localAliases: Map<string, { rel: string; source: string }>;
+  private readonly _aliases: AliasBinding[];
+  private readonly _replacedJsrPackages: Map<string, string>;
+  private readonly _npmDeps: Record<string, string>;
 
   constructor(input: SpecifierIndexInput) {
-    this.#vendored = input.vendored;
-    this.#localAliases = input.localAliases ?? new Map();
+    this._vendored = input.vendored;
+    this._localAliases = input.localAliases ?? new Map();
     // Longest alias first, so `@std/encoding/hex` wins over `@std/encoding`.
-    this.#aliases = [...input.aliases].sort((a, b) => b.alias.length - a.alias.length);
-    this.#replacedJsrPackages = input.replacedJsrPackages;
-    this.#npmDeps = input.npmDeps;
+    this._aliases = [...input.aliases].sort((a, b) => b.alias.length - a.alias.length);
+    this._replacedJsrPackages = input.replacedJsrPackages;
+    this._npmDeps = input.npmDeps;
   }
 
   /**
@@ -386,13 +376,13 @@ export class SpecifierIndex {
    * ```
    */
   resolve(specifier: string): SpecTarget | null {
-    const vendored = this.#vendored.get(specifier);
+    const vendored = this._vendored.get(specifier);
     if (vendored !== undefined) return { kind: "vendored", ...vendored };
 
-    const local = this.#localAliases.get(specifier);
+    const local = this._localAliases.get(specifier);
     if (local !== undefined) return { kind: "local", rel: local.rel };
 
-    for (const { alias, npmName, subpath } of this.#aliases) {
+    for (const { alias, npmName, subpath } of this._aliases) {
       if (specifier === alias) return { kind: "npm", bare: npmName + subpath };
       const prefix = alias.endsWith("/") ? alias : `${alias}/`;
       if (specifier.startsWith(prefix)) {
@@ -405,7 +395,7 @@ export class SpecifierIndex {
       if (reg.scheme === "npm") return { kind: "npm", bare: reg.pkg + reg.subpath };
       // A directly-written jsr specifier for a replaced package: rewritten to npm. Legitimate only inside vendored
       // third-party code; for local code this is a contract error caught earlier by `replacedJsrConflict`.
-      const npmName = this.#replacedJsrPackages.get(reg.pkg);
+      const npmName = this._replacedJsrPackages.get(reg.pkg);
       if (npmName !== undefined) return { kind: "npm", bare: npmName + reg.subpath };
     }
 
@@ -436,7 +426,7 @@ export class SpecifierIndex {
   replacedJsrConflict(specifier: string): string | null {
     const parsed = parseRegistry(specifier);
     const pkg = (parsed?.scheme === "jsr" ? parsed.pkg : null) ?? jsrUrlPackage(specifier);
-    return pkg === null ? null : (this.#replacedJsrPackages.get(pkg) ?? null);
+    return pkg === null ? null : (this._replacedJsrPackages.get(pkg) ?? null);
   }
 
   /**
@@ -466,13 +456,13 @@ export class SpecifierIndex {
    */
   declarationImportMap(): Record<string, string> {
     const map: Record<string, string> = {};
-    for (const { alias, npmName, subpath, version } of this.#aliases) {
+    for (const { alias, npmName, subpath, version } of this._aliases) {
       map[alias] = `npm:${npmName}@${version}${subpath}`;
     }
-    for (const [specifier, { src }] of this.#vendored) {
+    for (const [specifier, { src }] of this._vendored) {
       map[specifier] ??= `./${src}`;
     }
-    for (const [specifier, { source }] of this.#localAliases) {
+    for (const [specifier, { source }] of this._localAliases) {
       map[specifier] ??= source;
     }
     return map;
@@ -497,7 +487,7 @@ export class SpecifierIndex {
    */
   vendorImportMap(): Record<string, string> {
     const map: Record<string, string> = {};
-    for (const [name, version] of Object.entries(this.#npmDeps)) {
+    for (const [name, version] of Object.entries(this._npmDeps)) {
       map[name] = `npm:${name}@${version}`;
     }
     return map;

@@ -1,4 +1,12 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for `analyze` over synthetic graphs: fate classification, npm dependency collection, specifier
+ * bindings, and the error contract.
+ *
+ * @module
+ */
+
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { analyze } from "../src/analyze.ts";
 import { BuildError } from "../src/errors.ts";

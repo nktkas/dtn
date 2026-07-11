@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for `intake`: config validation and its normalization into a `Plan`.
+ *
+ * @module
+ */
+
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { BuildError } from "../src/errors.ts";
 import { type BuildConfig, intake } from "../src/intake.ts";

@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Stage-level tests for `rewriteStage`: what the second rewrite pass may and may not touch in vendor-emitted files.
+ *
+ * @module
+ */
+
 import { assertStringIncludes } from "jsr:@std/assert@1";
 import { dirname, join, toFileUrl } from "jsr:@std/path@^1";
 import { analyze } from "../src/analyze.ts";

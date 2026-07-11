@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for `planPackageJson`, fed by the real `analyze` so every path derives from the engine's own srcRoot.
+ *
+ * @module
+ */
+
 import { assertEquals } from "jsr:@std/assert@1";
 import { resolve, toFileUrl } from "jsr:@std/path@^1";
 import type { PackageJson } from "type-fest";

@@ -10,7 +10,9 @@ import { type Node, type ParseResult, parseSync } from "oxc-parser";
 import { walk } from "oxc-walker";
 import { BuildError } from "./errors.ts";
 
-// ── Specifier locator (oxc) ───────────────────────────────────────────────────
+// =============================================================================
+// Specifier locator
+// =============================================================================
 
 /**
  * The oxc parse dialect for a file.
@@ -36,25 +38,24 @@ function specifierSpans(program: ParseResult["program"]): Span[] {
     enter(node): void {
       // The string-literal node carrying this form's module specifier, if it has one.
       let source: Node | null | undefined;
-      switch (node.type) {
-        case "ImportDeclaration": // import x from "..."
-        case "ExportNamedDeclaration": // export { y } from "..."
-        case "ExportAllDeclaration": // export * from "..."
-        case "ImportExpression": // import("...")
-        case "TSImportType": // import("...").T  (.d.ts type query)
-          source = node.source;
-          break;
-        // `import.meta.resolve("…")` instead holds it as the first argument of the call.
-        case "CallExpression":
-          if (
-            node.callee.type === "MemberExpression" && !node.callee.computed &&
-            node.callee.property.type === "Identifier" && node.callee.property.name === "resolve" &&
-            node.callee.object.type === "MetaProperty" && node.callee.object.meta.name === "import" &&
-            node.callee.object.property.name === "meta"
-          ) {
-            source = node.arguments[0];
-          }
-          break;
+      if (
+        node.type === "ImportDeclaration" || // import x from "..."
+        node.type === "ExportNamedDeclaration" || // export { y } from "..."
+        node.type === "ExportAllDeclaration" || // export * from "..."
+        node.type === "ImportExpression" || // import("...")
+        node.type === "TSImportType" // import("...").T  (.d.ts type query)
+      ) {
+        source = node.source;
+      }
+      // `import.meta.resolve("…")` instead holds it as the first argument of the call.
+      if (
+        node.type === "CallExpression" &&
+        node.callee.type === "MemberExpression" && !node.callee.computed &&
+        node.callee.property.type === "Identifier" && node.callee.property.name === "resolve" &&
+        node.callee.object.type === "MetaProperty" && node.callee.object.meta.name === "import" &&
+        node.callee.object.property.name === "meta"
+      ) {
+        source = node.arguments[0];
       }
       if (source?.type === "Literal" && typeof source.value === "string") {
         spans.push({ start: source.start, end: source.end });
@@ -93,8 +94,7 @@ export function rewriteSpecifiers(code: string, filename: string, rewrite: (spec
 
   let out = "";
   let last = 0;
-  // Span bounds include the quotes: keep them (slice to `start + 1`, resume at `end - 1`) and rewrite only the inner
-  // specifier text.
+  // Span bounds include the quotes: keep them (slice to `start + 1`, resume at `end - 1`) and rewrite only the inner text.
   for (const { start, end } of spans) {
     out += code.slice(last, start + 1) + rewrite(code.slice(start + 1, end - 1));
     last = end - 1;
@@ -102,7 +102,9 @@ export function rewriteSpecifiers(code: string, filename: string, rewrite: (spec
   return out + code.slice(last);
 }
 
-// ── Transpile fixups ───────────────────────────────────────────────────
+// =============================================================================
+// Transpile fixups
+// =============================================================================
 
 /**
  * Restores the `with { type: "json" }` attribute on JSON from-imports, which `deno transpile` drops from declarations.

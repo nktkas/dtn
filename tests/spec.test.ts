@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for the specifier and package-path helpers of `src/spec.ts`.
+ *
+ * @module
+ */
+
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   isRelative,

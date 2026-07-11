@@ -6,12 +6,11 @@
 
 import { dirname, relative } from "@std/path";
 
-// ── Registry specifiers ─────────────────────────────────────────────────────
+// =============================================================================
+// Registry specifiers
+// =============================================================================
 
-/**
- * Matches a registry specifier `scheme:[/]name[@version][/subpath]`; the name group accepts an unscoped name
- * or `@scope/name`.
- */
+/** Matches a registry specifier `scheme:[/]name[@version][/subpath]`; the name group accepts an unscoped name or `@scope/name`. */
 const REGISTRY_SPECIFIER = /^(npm|jsr):\/?(@[^/]+\/[^@/]+|[^@/]+)(?:@([^/]+))?(\/.*)?$/;
 const JSR_URL = /^https:\/\/jsr\.io\/(@[^/]+\/[^/]+)\//;
 
@@ -58,11 +57,13 @@ export function jsrUrlPackage(url: string): string | null {
  * ```
  */
 export function parseReplacement(value: string): { name: string; version?: string } {
-  const m = value.match(/^(@?[^@]+)(?:@(.+))?$/);
-  return m === null ? { name: value } : { name: m[1], version: m[2] };
+  const m = value.match(/^(@?[^@]+)(?:@(.+))?$/)!;
+  return { name: m[1], version: m[2] };
 }
 
-// ── Package paths ───────────────────────────────────────────────────────────
+// =============================================================================
+// Package paths
+// =============================================================================
 
 /** True for `./x` and `../x` relative specifiers. */
 export function isRelative(spec: string): boolean {
@@ -129,7 +130,9 @@ export function relSpecifier(fromFileRel: string, toFileRel: string): string {
   return isRelative(out) ? out : `./${out}`;
 }
 
-// ── Import-map resolution ───────────────────────────────────────────────────
+// =============================================================================
+// Import-map resolution
+// =============================================================================
 
 /**
  * Deno import-map resolution: an exact alias, then the longest matching prefix, then plain URL resolution.

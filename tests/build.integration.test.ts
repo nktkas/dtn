@@ -1,10 +1,15 @@
 // deno-lint-ignore-file no-import-prefix
 
-// End-to-end builds through the real `deno transpile` + `@deno/graph`. Offline and loopback fixtures run on the
-// default `deno test` without external networking; the one fixture that fetches jsr.io is gated behind
-// DTN_INTEGRATION — run it with `deno task test:integration`.
+/**
+ * End-to-end builds through the real `deno transpile` + `@deno/graph`. Offline and loopback fixtures run on the
+ * default `deno test` without external networking; the one fixture that fetches jsr.io is gated behind
+ * DTN_INTEGRATION — run it with `deno task test:integration`.
+ *
+ * @module
+ */
 
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "jsr:@std/assert@1";
+import { exists } from "jsr:@std/fs@1";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { build, type BuildConfig, BuildError } from "../mod.ts";
 
@@ -45,16 +50,9 @@ async function withBuild(
   }
 }
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await Deno.lstat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ── Offline fixtures (run on the default `deno test`) ────────────────────────
+// =============================================================================
+// Offline fixtures
+// =============================================================================
 
 Deno.test("integration — pure-local project: transpile, rewrite, source maps, package.json", async (t) => {
   await withBuild(
@@ -639,7 +637,9 @@ Deno.test("integration — the local pass inherits the project's compilerOptions
   );
 });
 
-// ── Loopback fixtures (a local server stands in for the remote host) ─────────
+// =============================================================================
+// Loopback fixtures
+// =============================================================================
 
 Deno.test({
   name: "integration — a public type derived from a vendored remote asset is type-checked, not `any`",
@@ -942,7 +942,9 @@ Deno.test({
   },
 });
 
-// ── Real-network fixture (gated behind DTN_INTEGRATION) ──────────────────────
+// =============================================================================
+// Network fixture
+// =============================================================================
 
 Deno.test({
   name: "integration — vendoring + npm-external + multi-entry (network, pinned jsr)",

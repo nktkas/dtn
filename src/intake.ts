@@ -12,7 +12,11 @@ import { parseRegistry } from "./spec.ts";
 /** Source-map modes accepted by {@linkcode BuildConfig.sourceMap}. */
 export const SOURCE_MAP_MODES = ["inline", "separate", "none"] as const;
 
-/** The `deno.json` configuration for the package. */
+/**
+ * The `deno.json` configuration for the package.
+ *
+ * @see https://docs.deno.com/runtime/fundamentals/configuration/
+ */
 export interface DenoConfig {
   name: string;
   version: string;

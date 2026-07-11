@@ -10,7 +10,9 @@ import { BuildError } from "./errors.ts";
 
 export { exists };
 
-// ── File system ──────────────────────────────────────────────────────────────
+// =============================================================================
+// File system
+// =============================================================================
 
 /** Removes a path recursively, ignoring only "not found". */
 export async function rmrf(path: string): Promise<void> {
@@ -72,9 +74,15 @@ export async function* walkFiles(dir: string, exts: string[]): AsyncGenerator<st
   for await (const entry of walk(dir, { includeDirs: false, exts })) yield entry.path;
 }
 
-// ── Subprocess ───────────────────────────────────────────────────────────────
+// =============================================================================
+// Subprocess
+// =============================================================================
 
-/** Options for one `deno transpile` invocation. */
+/**
+ * Options for one `deno transpile` invocation.
+ *
+ * @see https://docs.deno.com/runtime/reference/cli/transpile/
+ */
 interface TranspileOptions {
   importMap: string;
   files: string[];

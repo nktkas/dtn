@@ -1,3 +1,9 @@
+/**
+ * The error contract of the package: every failure is a {@linkcode BuildError} carrying a {@linkcode BuildErrorCode}.
+ *
+ * @module
+ */
+
 /** Machine-readable cause of a build failure. */
 export type BuildErrorCode =
   | "INVALID_EXPORTS"

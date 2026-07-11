@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for `SpecifierIndex`: resolution, replaced-package conflicts, and the two declaration import maps.
+ *
+ * @module
+ */
+
 import { assertEquals } from "jsr:@std/assert@1";
 import { SpecifierIndex } from "../src/analyze.ts";
 

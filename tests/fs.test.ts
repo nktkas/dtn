@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for the file-system helpers of `src/fs.ts`.
+ *
+ * @module
+ */
+
 import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { join } from "jsr:@std/path@^1";
 import { BuildError } from "../src/errors.ts";

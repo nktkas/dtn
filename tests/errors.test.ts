@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for the `BuildError` message and subject contract.
+ *
+ * @module
+ */
+
 import { assertEquals } from "jsr:@std/assert@1";
 import { BuildError } from "../src/errors.ts";
 

@@ -1,4 +1,11 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for the oxc-based specifier locator and the `deno transpile` output fixups.
+ *
+ * @module
+ */
+
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { BuildError } from "../src/errors.ts";
 import { restoreJsonAttributes, rewriteSpecifiers, sourceMappingComment } from "../src/rewrite.ts";
