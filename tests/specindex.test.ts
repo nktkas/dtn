@@ -6,7 +6,7 @@ import { SpecifierIndex } from "../src/analyze.ts";
 // proves the longest-alias-first ordering (the shorter `@a` prefix would otherwise win and yield `a-short/b`).
 function makeIndex(): SpecifierIndex {
   return new SpecifierIndex({
-    vendored: new Map([["@remote/x", "_deps/esm.sh/x/1.0.0/mod.js"]]),
+    vendored: new Map([["@remote/x", { src: "_deps/esm.sh/x/1.0.0/mod.ts", emit: "_deps/esm.sh/x/1.0.0/mod.js" }]]),
     aliases: [
       { alias: "chalk", npmName: "chalk", subpath: "", version: "^5" },
       { alias: "@std/encoding/hex", npmName: "@std/encoding", subpath: "/hex", version: "^1" },
@@ -23,7 +23,11 @@ Deno.test("SpecifierIndex.resolve", async (t) => {
   const idx = makeIndex();
 
   await t.step("a written specifier bound to a vendored file", () => {
-    assertEquals(idx.resolve("@remote/x"), { kind: "vendored", rel: "_deps/esm.sh/x/1.0.0/mod.js" });
+    assertEquals(idx.resolve("@remote/x"), {
+      kind: "vendored",
+      src: "_deps/esm.sh/x/1.0.0/mod.ts",
+      emit: "_deps/esm.sh/x/1.0.0/mod.js",
+    });
   });
 
   await t.step("an exact alias → npm name", () => {
@@ -137,20 +141,26 @@ Deno.test("SpecifierIndex — a local-file alias resolves to a package file and 
   });
 });
 
-Deno.test("SpecifierIndex — a copied remote JS module keeps its .js, where a transpiled vendored dep maps to .ts", async (t) => {
+Deno.test("SpecifierIndex — a copy is its own source, where a transpiled vendored dep stages a .ts", async (t) => {
   const idx = new SpecifierIndex({
-    vendored: new Map([["@scope/ts", "_deps/esm.sh/ts/1.0.0/mod.js"]]),
-    vendorCopies: new Map([["https://esm.sh/x.js", "_deps/esm.sh/x.js"]]),
+    vendored: new Map([
+      ["@scope/ts", { src: "_deps/esm.sh/ts/1.0.0/mod.ts", emit: "_deps/esm.sh/ts/1.0.0/mod.js" }],
+      ["https://esm.sh/x.js", { src: "_deps/esm.sh/x.js", emit: "_deps/esm.sh/x.js" }],
+    ]),
     aliases: [],
     replacedJsrPackages: new Map(),
     npmDeps: {},
   });
 
-  await t.step("resolve → a vendoredCopy target (a package file, rewritten by relative path)", () => {
-    assertEquals(idx.resolve("https://esm.sh/x.js"), { kind: "vendoredCopy", rel: "_deps/esm.sh/x.js" });
+  await t.step("resolve → a copied module's target (staged and emitted paths coincide)", () => {
+    assertEquals(idx.resolve("https://esm.sh/x.js"), {
+      kind: "vendored",
+      src: "_deps/esm.sh/x.js",
+      emit: "_deps/esm.sh/x.js",
+    });
   });
 
-  await t.step("declarationImportMap: a transpiled vendored dep points at its `.ts` source, a copy stays `.js`", () => {
+  await t.step("declarationImportMap: each vendored module points at its source", () => {
     assertEquals(idx.declarationImportMap(), {
       "@scope/ts": "./_deps/esm.sh/ts/1.0.0/mod.ts",
       "https://esm.sh/x.js": "./_deps/esm.sh/x.js",
@@ -162,7 +172,7 @@ Deno.test("SpecifierIndex.declarationImportMap — an import-map alias wins over
   // The same string can be both an import-map alias and a written specifier bound to a vendored file. Aliases are
   // emitted first and the vendored loop uses `??=`, so the alias's `npm:` form must survive the collision.
   const idx = new SpecifierIndex({
-    vendored: new Map([["chalk", "_deps/x/chalk.js"]]),
+    vendored: new Map([["chalk", { src: "_deps/x/chalk.ts", emit: "_deps/x/chalk.js" }]]),
     aliases: [{ alias: "chalk", npmName: "chalk", subpath: "", version: "^5" }],
     replacedJsrPackages: new Map(),
     npmDeps: { chalk: "^5" },

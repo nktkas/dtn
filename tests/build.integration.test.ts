@@ -794,6 +794,44 @@ Deno.test({
 });
 
 Deno.test({
+  name: "integration — a remote TypeScript module served from an extensionless URL is vendored and reachable",
+  fn: async () => {
+    // The media type comes from the Content-Type header, not the URL path, so an extensionless TypeScript URL is
+    // valid Deno; the vendored copy must still transpile to a `.js` the rewritten imports can reach.
+    const ac = new AbortController();
+    const server = Deno.serve(
+      { hostname: "127.0.0.1", port: 0, signal: ac.signal, onListen: () => {} },
+      () =>
+        new Response(`export const answer: number = 7;\n`, {
+          headers: { "content-type": "application/typescript; charset=utf-8" },
+        }),
+    );
+    const { hostname, port } = server.addr as Deno.NetAddr;
+    try {
+      await withBuild(
+        {
+          "deno.json": JSON.stringify({ name: "@fx/noext", version: "1.0.0", exports: { ".": "./src/mod.ts" } }),
+          "src/mod.ts": `export { answer } from "http://${hostname}:${port}/dep";\n`,
+        },
+        { outDir: "dist" },
+        async ({ code, stderr, dir }) => {
+          assertEquals(code, 0, stderr);
+          const dep = `esm/_deps/${hostname}:${port}`;
+          assert(await exists(join(dir, "dist", dep, "dep.js")), "vendored dep.js missing");
+          assertStringIncludes(
+            await Deno.readTextFile(join(dir, "dist/esm/mod.js")),
+            `from "./_deps/${hostname}:${port}/dep.js"`,
+          );
+        },
+      );
+    } finally {
+      ac.abort();
+      await server.finished;
+    }
+  },
+});
+
+Deno.test({
   name: "integration — a remote redirect chain is followed to its final module",
   fn: async () => {
     // A CLI-populated cache stores each redirect hop separately, so the redirects table chains (a → b, b → c) and

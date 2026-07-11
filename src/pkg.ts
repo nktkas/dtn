@@ -37,16 +37,17 @@ interface ExportsEntry {
  */
 export function planPackageJson(analysis: Analysis): Record<string, unknown> {
   const { plan, srcRoot, npmDeps } = analysis;
+  const codeRel = toPosix(relative(plan.outDir, plan.codeDir));
 
   const exportsMap: Record<string, ExportsEntry> = {};
   for (const [subpath, source] of Object.entries(plan.exports)) {
     const rel = toPosix(relative(srcRoot, resolve(plan.repoRoot, source)));
     if (rel.endsWith(".d.ts")) {
-      exportsMap[subpath] = { types: `./esm/${rel}` };
+      exportsMap[subpath] = { types: `./${codeRel}/${rel}` };
     } else {
       exportsMap[subpath] = {
-        types: `./esm/${rel.replace(/\.ts$/, ".d.ts")}`,
-        default: `./esm/${tsToJs(rel)}`,
+        types: `./${codeRel}/${rel.replace(/\.ts$/, ".d.ts")}`,
+        default: `./${codeRel}/${tsToJs(rel)}`,
       };
     }
   }

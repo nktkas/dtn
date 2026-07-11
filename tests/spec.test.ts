@@ -3,7 +3,6 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   isRelative,
   jsrUrlPackage,
-  jsToTs,
   makeResolver,
   parseRegistry,
   parseReplacement,
@@ -132,19 +131,13 @@ Deno.test("vendoredRel", async (t) => {
   });
 });
 
-Deno.test("tsToJs / jsToTs", async (t) => {
-  await t.step("tsToJs swaps a trailing .ts only", () => {
+Deno.test("tsToJs", async (t) => {
+  await t.step("swaps a trailing .ts only", () => {
     assertEquals(tsToJs("mod.ts"), "mod.js");
     assertEquals(tsToJs("a/b/mod.ts"), "a/b/mod.js");
     assertEquals(tsToJs("mod.js"), "mod.js");
     assertEquals(tsToJs("data.json"), "data.json");
     assertEquals(tsToJs("mod.mts"), "mod.mts");
-  });
-
-  await t.step("jsToTs swaps a trailing .js only", () => {
-    assertEquals(jsToTs("mod.js"), "mod.ts");
-    assertEquals(jsToTs("mod.ts"), "mod.ts");
-    assertEquals(jsToTs("mod.mjs"), "mod.mjs");
   });
 });
 

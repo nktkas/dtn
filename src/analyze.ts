@@ -9,16 +9,7 @@ import { common, dirname, fromFileUrl, relative } from "@std/path";
 import { BuildError } from "./errors.ts";
 import type { Plan } from "./intake.ts";
 import type { RawGraph, RawMediaType, RawModule } from "./graph.ts";
-import {
-  isRelative,
-  jsrUrlPackage,
-  jsToTs,
-  parseRegistry,
-  parseReplacement,
-  toPosix,
-  tsToJs,
-  vendoredRel,
-} from "./spec.ts";
+import { isRelative, jsrUrlPackage, parseRegistry, parseReplacement, toPosix, tsToJs, vendoredRel } from "./spec.ts";
 
 // ── Classification ──────────────────────────────────────────────────────────
 
@@ -35,7 +26,7 @@ const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs
 type Fate =
   | { kind: "transpile"; path: string } // local `.ts` → deno transpile
   | { kind: "copy"; path: string } // local `.js`/`.mjs`/`.cjs`/`.json`/`.d.ts` → copied verbatim
-  | { kind: "vendorCode"; url: string; rel: string } // remote `.ts` → inlined and transpiled
+  | { kind: "vendorCode"; url: string; src: string; emit: string } // remote `.ts` → staged at `src`, transpiled to `emit`
   | { kind: "vendorCopy"; url: string; rel: string } // remote `.js`/`.mjs`/`.cjs`/`.d.ts` → inlined, rewritten, not transpiled
   | { kind: "vendorAsset"; url: string; rel: string } // remote JSON/Wasm → copied byte-for-byte
   | { kind: "external"; npm: { name: string; version: string } | null }; // npm/node/replaced → no emit, a graph leaf
@@ -49,8 +40,8 @@ export interface Analysis {
   localFiles: string[];
   /** Absolute paths of local non-`.ts` sources copied verbatim. */
   localCopies: string[];
-  /** Remote code-module URL → package-relative `.js` path. */
-  vendoredCode: Map<string, string>;
+  /** Remote code-module URL → its staged `.ts` source and emitted `.js` path, both package-relative. */
+  vendoredCode: Map<string, { src: string; emit: string }>;
   /** Remote JavaScript or type-declaration URL → package-relative path (copied verbatim and rewritten, not transpiled). */
   vendoredCopies: Map<string, string>;
   /** Remote asset URL → package-relative path (copied byte-for-byte). */
@@ -81,7 +72,10 @@ export interface Analysis {
  *
  * // analysis.localFiles   -> ["/repo/src/mod.ts", "/repo/src/util.ts"]
  * // analysis.npmDeps      -> { valibot: "1.3.1" }
- * // analysis.vendoredCode -> Map { "https://jsr.io/@std/encoding/1.0.0/hex.ts" => "_deps/jsr.io/@std/encoding/1.0.0/hex.js" }
+ * // analysis.vendoredCode -> Map {
+ * //   "https://jsr.io/@std/encoding/1.0.0/hex.ts" =>
+ * //     { src: "_deps/jsr.io/@std/encoding/1.0.0/hex.ts", emit: "_deps/jsr.io/@std/encoding/1.0.0/hex.js" },
+ * // }
  * ```
  */
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
@@ -138,7 +132,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
 
   const localFiles: string[] = [];
   const localCopies: string[] = [];
-  const vendoredCode = new Map<string, string>();
+  const vendoredCode = new Map<string, { src: string; emit: string }>();
   const vendoredCopies = new Map<string, string>();
   const vendoredAssets = new Map<string, string>();
   const localByUrl = new Map<string, string>();
@@ -153,7 +147,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
         localByUrl.set(module.specifier, fate.path);
         break;
       case "vendorCode":
-        vendoredCode.set(fate.url, fate.rel);
+        vendoredCode.set(fate.url, { src: fate.src, emit: fate.emit });
         break;
       case "vendorCopy":
         vendoredCopies.set(fate.url, fate.rel);
@@ -177,22 +171,20 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
   // Bind each written non-relative specifier to the package file it resolves to: a vendored dependency under `_deps`,
   // or — for an import-map alias pointing at a local file (`"$u": "./util.ts"`) — that local source's emitted path.
   // Relative specifiers rewrite by extension only, so they are skipped.
-  const vendoredBySpecifier = new Map<string, string>();
-  const vendorCopyBySpecifier = new Map<string, string>();
+  const vendoredBySpecifier = new Map<string, { src: string; emit: string }>();
   const localBySpecifier = new Map<string, { rel: string; source: string }>();
   for (const { module } of reachable) {
     for (const d of module.dependencies) {
       if (isRelative(d.specifier) || d.resolved === undefined) continue;
-      const vendored = vendoredCode.get(d.resolved) ?? vendoredAssets.get(d.resolved);
-      if (vendored !== undefined) {
-        vendoredBySpecifier.set(d.specifier, vendored);
+      const code = vendoredCode.get(d.resolved);
+      if (code !== undefined) {
+        vendoredBySpecifier.set(d.specifier, code);
         continue;
       }
-      // Kept apart from `vendoredBySpecifier`: the declaration import map points the type-checker at a vendored module's
-      // `.ts` source, but a copied `.js`/`.d.ts` has none — folding the two would map it to a `.ts` that does not exist.
-      const vendoredCopy = vendoredCopies.get(d.resolved);
-      if (vendoredCopy !== undefined) {
-        vendorCopyBySpecifier.set(d.specifier, vendoredCopy);
+      // A copied module or a byte asset is its own source.
+      const copied = vendoredCopies.get(d.resolved) ?? vendoredAssets.get(d.resolved);
+      if (copied !== undefined) {
+        vendoredBySpecifier.set(d.specifier, { src: copied, emit: copied });
         continue;
       }
       const localAbs = localByUrl.get(d.resolved);
@@ -206,7 +198,6 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
 
   const specifiers = new SpecifierIndex({
     vendored: vendoredBySpecifier,
-    vendorCopies: vendorCopyBySpecifier,
     localAliases: localBySpecifier,
     aliases,
     replacedJsrPackages,
@@ -262,7 +253,12 @@ function fateOf(module: RawModule, replacedJsrPackages: Map<string, string>, dep
     );
   }
   const rel = vendoredRel(module.specifier, depsDir);
-  if (media === "TypeScript") return { kind: "vendorCode", url: module.specifier, rel: tsToJs(rel) };
+  if (media === "TypeScript") {
+    // The media type comes from the Content-Type header, not the URL path, so a TypeScript URL may lack an
+    // extension — while both the transpiler and the specifier rewriter key on it. Normalize the staged name.
+    const src = rel.endsWith(".ts") ? rel : `${rel}.ts`;
+    return { kind: "vendorCode", url: module.specifier, src, emit: tsToJs(src) };
+  }
   if (media !== undefined && VENDOR_COPY_MEDIA.has(media)) return { kind: "vendorCopy", url: module.specifier, rel };
   if (media !== undefined && ASSET_MEDIA.has(media)) return { kind: "vendorAsset", url: module.specifier, rel };
   throw new BuildError(
@@ -310,8 +306,7 @@ function validateSpecifiers(reachable: Array<{ module: RawModule }>, specifiers:
 
 /** Where a non-relative specifier points once the package is built. */
 type SpecTarget =
-  | { kind: "vendored"; rel: string } // package-relative `.js` path of the inlined (transpiled) file
-  | { kind: "vendoredCopy"; rel: string } // package-relative path of a remote module (JavaScript or `.d.ts`) copied verbatim
+  | { kind: "vendored"; src: string; emit: string } // a vendored file's staged source and emitted package paths
   | { kind: "local"; rel: string } // package-relative `.js` path of a local file reached via an import-map alias
   | { kind: "npm"; bare: string }; // npm package name with its subpath, e.g. `valibot` or `@std/x/sub`
 
@@ -327,10 +322,8 @@ interface AliasBinding {
 
 /** Everything {@linkcode SpecifierIndex} needs, assembled by `analyze`. */
 interface SpecifierIndexInput {
-  /** Specifier as written → vendored (transpiled) `.js` path under the code root. */
-  vendored: Map<string, string>;
-  /** Specifier as written → a remote JavaScript or `.d.ts` module's copied path under the code root. Default: none. */
-  vendorCopies?: Map<string, string>;
+  /** Specifier as written → the vendored module's staged source and emitted paths under the code root. */
+  vendored: Map<string, { src: string; emit: string }>;
   /**
    * Import-map alias pointing at a local file → that file's package-relative `.js` path (`rel`) and its real source URL
    * (`source`, for the declaration pass to type-check against).
@@ -349,8 +342,7 @@ interface SpecifierIndexInput {
  * via an import-map alias, or a bare npm name — and builds the import maps the declaration passes need.
  */
 export class SpecifierIndex {
-  readonly #vendored: Map<string, string>;
-  readonly #vendorCopies: Map<string, string>;
+  readonly #vendored: Map<string, { src: string; emit: string }>;
   readonly #localAliases: Map<string, { rel: string; source: string }>;
   readonly #aliases: AliasBinding[];
   readonly #replacedJsrPackages: Map<string, string>;
@@ -358,7 +350,6 @@ export class SpecifierIndex {
 
   constructor(input: SpecifierIndexInput) {
     this.#vendored = input.vendored;
-    this.#vendorCopies = input.vendorCopies ?? new Map();
     this.#localAliases = input.localAliases ?? new Map();
     // Longest alias first, so `@std/encoding/hex` wins over `@std/encoding`.
     this.#aliases = [...input.aliases].sort((a, b) => b.alias.length - a.alias.length);
@@ -373,7 +364,9 @@ export class SpecifierIndex {
    * @example
    * ```ts
    * const index = new SpecifierIndex({
-   *   vendored: new Map([["@scope/local", "_deps/esm.sh/local/1.0.0/mod.js"]]),
+   *   vendored: new Map([
+   *     ["@scope/local", { src: "_deps/esm.sh/local/1.0.0/mod.ts", emit: "_deps/esm.sh/local/1.0.0/mod.js" }],
+   *   ]),
    *   aliases: [{ alias: "@valibot/valibot", npmName: "valibot", subpath: "", version: "1" }],
    *   replacedJsrPackages: new Map(),
    *   npmDeps: {},
@@ -387,17 +380,14 @@ export class SpecifierIndex {
    * index.resolve("npm:chalk@^5/foo");
    * // -> { kind: "npm", bare: "chalk/foo" }
    *
-   * // A written specifier bound to a vendored dependency is looked up to its inlined path:
+   * // A written specifier bound to a vendored dependency is looked up to its staged and emitted paths:
    * index.resolve("@scope/local");
-   * // -> { kind: "vendored", rel: "_deps/esm.sh/local/1.0.0/mod.js" }
+   * // -> { kind: "vendored", src: "_deps/esm.sh/local/1.0.0/mod.ts", emit: "_deps/esm.sh/local/1.0.0/mod.js" }
    * ```
    */
   resolve(specifier: string): SpecTarget | null {
     const vendored = this.#vendored.get(specifier);
-    if (vendored !== undefined) return { kind: "vendored", rel: vendored };
-
-    const vendoredCopy = this.#vendorCopies.get(specifier);
-    if (vendoredCopy !== undefined) return { kind: "vendoredCopy", rel: vendoredCopy };
+    if (vendored !== undefined) return { kind: "vendored", ...vendored };
 
     const local = this.#localAliases.get(specifier);
     if (local !== undefined) return { kind: "local", rel: local.rel };
@@ -457,7 +447,9 @@ export class SpecifierIndex {
    * @example
    * ```ts
    * const index = new SpecifierIndex({
-   *   vendored: new Map([["@remote/x", "_deps/esm.sh/x/1.0.0/mod.js"]]),
+   *   vendored: new Map([
+   *     ["@remote/x", { src: "_deps/esm.sh/x/1.0.0/mod.ts", emit: "_deps/esm.sh/x/1.0.0/mod.js" }],
+   *   ]),
    *   localAliases: new Map([["$u", { rel: "util.js", source: "file:///repo/src/util.ts" }]]),
    *   aliases: [{ alias: "@valibot/valibot", npmName: "valibot", subpath: "", version: "1" }],
    *   replacedJsrPackages: new Map(),
@@ -477,12 +469,8 @@ export class SpecifierIndex {
     for (const { alias, npmName, subpath, version } of this.#aliases) {
       map[alias] = `npm:${npmName}@${version}${subpath}`;
     }
-    for (const [specifier, rel] of this.#vendored) {
-      map[specifier] ??= `./${jsToTs(rel)}`;
-    }
-    for (const [specifier, rel] of this.#vendorCopies) {
-      // A copied `.js`/`.d.ts` is its own source — point at it as-is, never `jsToTs`'d to a `.ts` that does not exist.
-      map[specifier] ??= `./${rel}`;
+    for (const [specifier, { src }] of this.#vendored) {
+      map[specifier] ??= `./${src}`;
     }
     for (const [specifier, { source }] of this.#localAliases) {
       map[specifier] ??= source;

@@ -85,8 +85,14 @@ Deno.test("analyze — classifies a representative graph", async (t) => {
     assertEquals(
       a.vendoredCode,
       new Map([
-        ["https://jsr.io/@std/encoding/1.0.0/hex.ts", "_deps/jsr.io/@std/encoding/1.0.0/hex.js"],
-        ["https://jsr.io/@std/encoding/1.0.0/_common.ts", "_deps/jsr.io/@std/encoding/1.0.0/_common.js"],
+        ["https://jsr.io/@std/encoding/1.0.0/hex.ts", {
+          src: "_deps/jsr.io/@std/encoding/1.0.0/hex.ts",
+          emit: "_deps/jsr.io/@std/encoding/1.0.0/hex.js",
+        }],
+        ["https://jsr.io/@std/encoding/1.0.0/_common.ts", {
+          src: "_deps/jsr.io/@std/encoding/1.0.0/_common.ts",
+          emit: "_deps/jsr.io/@std/encoding/1.0.0/_common.js",
+        }],
       ]),
     );
     assertEquals(a.vendoredAssets.size, 0);
@@ -100,10 +106,11 @@ Deno.test("analyze — classifies a representative graph", async (t) => {
     assertEquals(a.srcRoot, "/repo/src");
   });
 
-  await t.step("the vendored jsr specifier resolves to its inlined .js path", () => {
+  await t.step("the vendored jsr specifier resolves to its staged and emitted paths", () => {
     assertEquals(a.specifiers.resolve("jsr:@std/encoding@1.0.0/hex"), {
       kind: "vendored",
-      rel: "_deps/jsr.io/@std/encoding/1.0.0/hex.js",
+      src: "_deps/jsr.io/@std/encoding/1.0.0/hex.ts",
+      emit: "_deps/jsr.io/@std/encoding/1.0.0/hex.js",
     });
   });
 
@@ -170,7 +177,12 @@ Deno.test("analyze — a remote JavaScript module is vendored as a copy (rewritt
   assertEquals(a.vendoredCode.size, 0);
   assertEquals(a.vendoredAssets.size, 0);
   assertEquals(a.vendoredCopies, new Map([["https://esm.sh/x.js", "_deps/esm.sh/x.js"]]));
-  assertEquals(a.specifiers.resolve("https://esm.sh/x.js"), { kind: "vendoredCopy", rel: "_deps/esm.sh/x.js" });
+  // A copy is its own source: staged and emitted paths coincide.
+  assertEquals(a.specifiers.resolve("https://esm.sh/x.js"), {
+    kind: "vendored",
+    src: "_deps/esm.sh/x.js",
+    emit: "_deps/esm.sh/x.js",
+  });
 });
 
 Deno.test("analyze — a remote .d.ts is vendored as a copy (types-only, keeps its .d.ts extension)", () => {
@@ -182,8 +194,9 @@ Deno.test("analyze — a remote .d.ts is vendored as a copy (types-only, keeps i
   // A declaration is copied like a JS module (no transpile), but its path keeps `.d.ts` — there is no `.js` twin.
   assertEquals(a.vendoredCopies, new Map([["https://esm.sh/types.d.ts", "_deps/esm.sh/types.d.ts"]]));
   assertEquals(a.specifiers.resolve("https://esm.sh/types.d.ts"), {
-    kind: "vendoredCopy",
-    rel: "_deps/esm.sh/types.d.ts",
+    kind: "vendored",
+    src: "_deps/esm.sh/types.d.ts",
+    emit: "_deps/esm.sh/types.d.ts",
   });
 });
 
@@ -203,12 +216,26 @@ Deno.test("analyze — a vendored package importing another vendored package (cr
   assertEquals(
     a.vendoredCode,
     new Map([
-      ["https://jsr.io/@x/a/1.0.0/mod.ts", "_deps/jsr.io/@x/a/1.0.0/mod.js"],
-      ["https://jsr.io/@y/b/2.0.0/mod.ts", "_deps/jsr.io/@y/b/2.0.0/mod.js"],
+      ["https://jsr.io/@x/a/1.0.0/mod.ts", {
+        src: "_deps/jsr.io/@x/a/1.0.0/mod.ts",
+        emit: "_deps/jsr.io/@x/a/1.0.0/mod.js",
+      }],
+      ["https://jsr.io/@y/b/2.0.0/mod.ts", {
+        src: "_deps/jsr.io/@y/b/2.0.0/mod.ts",
+        emit: "_deps/jsr.io/@y/b/2.0.0/mod.js",
+      }],
     ]),
   );
-  assertEquals(a.specifiers.resolve("jsr:@x/a@1.0.0"), { kind: "vendored", rel: "_deps/jsr.io/@x/a/1.0.0/mod.js" });
-  assertEquals(a.specifiers.resolve("jsr:/@y/b@^2.0.0"), { kind: "vendored", rel: "_deps/jsr.io/@y/b/2.0.0/mod.js" });
+  assertEquals(a.specifiers.resolve("jsr:@x/a@1.0.0"), {
+    kind: "vendored",
+    src: "_deps/jsr.io/@x/a/1.0.0/mod.ts",
+    emit: "_deps/jsr.io/@x/a/1.0.0/mod.js",
+  });
+  assertEquals(a.specifiers.resolve("jsr:/@y/b@^2.0.0"), {
+    kind: "vendored",
+    src: "_deps/jsr.io/@y/b/2.0.0/mod.ts",
+    emit: "_deps/jsr.io/@y/b/2.0.0/mod.js",
+  });
 });
 
 Deno.test("analyze — a custom depsDir replaces the _deps prefix in vendored paths", () => {
@@ -217,8 +244,18 @@ Deno.test("analyze — a custom depsDir replaces the _deps prefix in vendored pa
     mod("https://jsr.io/@x/a/1.0.0/mod.ts", "TypeScript", []),
   ]);
   const a = analyze(plan({ ".": "./src/mod.ts" }, {}, {}, "vendor"), g);
-  assertEquals(a.vendoredCode, new Map([["https://jsr.io/@x/a/1.0.0/mod.ts", "vendor/jsr.io/@x/a/1.0.0/mod.js"]]));
-  assertEquals(a.specifiers.resolve("jsr:@x/a@1.0.0"), { kind: "vendored", rel: "vendor/jsr.io/@x/a/1.0.0/mod.js" });
+  assertEquals(
+    a.vendoredCode,
+    new Map([["https://jsr.io/@x/a/1.0.0/mod.ts", {
+      src: "vendor/jsr.io/@x/a/1.0.0/mod.ts",
+      emit: "vendor/jsr.io/@x/a/1.0.0/mod.js",
+    }]]),
+  );
+  assertEquals(a.specifiers.resolve("jsr:@x/a@1.0.0"), {
+    kind: "vendored",
+    src: "vendor/jsr.io/@x/a/1.0.0/mod.ts",
+    emit: "vendor/jsr.io/@x/a/1.0.0/mod.js",
+  });
 });
 
 Deno.test("analyze — import-map npm entries", async (t) => {
@@ -369,8 +406,15 @@ Deno.test("analyze — a vendored module may import a replaced package via its r
   );
   const a = analyze(p, g); // must not throw
   assertEquals(a.npmDeps, { valibot: "1.3.1" });
-  assertEquals(a.vendoredCode.get("https://jsr.io/@other/x/1.0.0/mod.ts"), "_deps/jsr.io/@other/x/1.0.0/mod.js");
-  assertEquals(a.specifiers.resolve("@other/x"), { kind: "vendored", rel: "_deps/jsr.io/@other/x/1.0.0/mod.js" });
+  assertEquals(a.vendoredCode.get("https://jsr.io/@other/x/1.0.0/mod.ts"), {
+    src: "_deps/jsr.io/@other/x/1.0.0/mod.ts",
+    emit: "_deps/jsr.io/@other/x/1.0.0/mod.js",
+  });
+  assertEquals(a.specifiers.resolve("@other/x"), {
+    kind: "vendored",
+    src: "_deps/jsr.io/@other/x/1.0.0/mod.ts",
+    emit: "_deps/jsr.io/@other/x/1.0.0/mod.js",
+  });
 });
 
 Deno.test("analyze — contract violations throw the documented BuildError", async (t) => {

@@ -92,11 +92,6 @@ export function tsToJs(path: string): string {
   return path.endsWith(".ts") ? `${path.slice(0, -3)}.js` : path;
 }
 
-/** Swaps a trailing `.js` for `.ts` (a no-op for any other extension). */
-export function jsToTs(path: string): string {
-  return path.endsWith(".js") ? `${path.slice(0, -3)}.ts` : path;
-}
-
 /** Rewrites OS path separators to POSIX, the form used for every specifier and `package.json` path. */
 export function toPosix(path: string): string {
   return path.replaceAll("\\", "/");

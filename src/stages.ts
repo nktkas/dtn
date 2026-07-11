@@ -14,7 +14,7 @@ import type { RawGraph } from "./graph.ts";
 import type { Plan } from "./intake.ts";
 import { planPackageJson } from "./pkg.ts";
 import { restoreJsonAttributes, rewriteSpecifiers, sourceMappingComment } from "./rewrite.ts";
-import { isRelative, jsToTs, relSpecifier, toPosix, tsToJs } from "./spec.ts";
+import { isRelative, relSpecifier, toPosix, tsToJs } from "./spec.ts";
 
 /** The artifact extensions `deno transpile --declaration` emits per source, by source-map mode. */
 function emittedExts(sourceMap: Plan["sourceMap"]): string[] {
@@ -33,16 +33,15 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
   const { plan, specifiers, vendoredCode, vendoredCopies, vendoredAssets } = analysis;
   const decoder = new TextDecoder();
 
-  // Rewrites a vendored module's specifiers to their package form: a sibling vendored dep by a relative path (a
-  // transpiled `.ts` is referenced as `.ts`, turned into `.js` by the later pass; a copied `.js` stays `.js`), an npm
-  // dependency by its bare name.
+  // Rewrites a vendored module's specifiers to their package form: a sibling vendored dep by a relative path to its
+  // SOURCE (the later pass flips `.ts` → `.js` after the transpile; a copy is its own source), npm deps by bare name.
   const rewriteVendored = (source: string, file: string, rel: string): string =>
     rewriteSpecifiers(source, file, (spec) => {
       if (isRelative(spec)) return spec;
       const target = specifiers.resolve(spec);
       if (target === null) return spec;
       if (target.kind === "npm") return target.bare;
-      return relSpecifier(rel, target.kind === "vendored" ? jsToTs(target.rel) : target.rel);
+      return relSpecifier(rel, target.kind === "vendored" ? target.src : target.rel);
     });
 
   // Byte assets go in first — into both the package (runtime) and the scratch tree. A declaration pass resolves a
@@ -64,11 +63,10 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
   }
 
   const vendorFiles: string[] = [];
-  for (const [url, rel] of vendoredCode) {
-    const relTs = jsToTs(rel);
-    const rewritten = rewriteVendored(decoder.decode(await graph.readSource(url)), relTs, rel);
-    await fs.writeText(join(plan.tmpDir, relTs), rewritten);
-    vendorFiles.push(relTs);
+  for (const [url, { src }] of vendoredCode) {
+    const rewritten = rewriteVendored(decoder.decode(await graph.readSource(url)), src, src);
+    await fs.writeText(join(plan.tmpDir, src), rewritten);
+    vendorFiles.push(src);
   }
 
   if (vendorFiles.length > 0) {
@@ -146,9 +144,9 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
   // vendorStage already finalized these files' non-relative specifiers; re-resolving them would let a same-named
   // import-map alias capture the finished output. Only the deferred relative `.ts` → `.js` flip still applies.
   const vendorEmitted = new Set<string>(vendoredCopies.values());
-  for (const rel of vendoredCode.values()) {
-    vendorEmitted.add(rel);
-    vendorEmitted.add(rel.replace(/\.js$/, ".d.ts"));
+  for (const { emit } of vendoredCode.values()) {
+    vendorEmitted.add(emit);
+    vendorEmitted.add(emit.replace(/\.js$/, ".d.ts"));
   }
 
   for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".cjs", ".ts"])) {
@@ -184,9 +182,9 @@ function rewriteForNode(spec: string, fromRel: string, specifiers: SpecifierInde
   if (isRelative(spec)) return relativeToNode(spec);
   const target = specifiers.resolve(spec);
   if (target === null) return spec; // `node:` builtins and already-bare externals
-  // A vendored dep and a local-file alias both resolve to a package file addressed by a relative path; only an npm
-  // external stays a bare name.
-  return target.kind === "npm" ? target.bare : relSpecifier(fromRel, target.rel);
+  if (target.kind === "npm") return target.bare;
+  // A vendored dep and a local-file alias both resolve to a package file addressed by a relative path.
+  return relSpecifier(fromRel, target.kind === "vendored" ? target.emit : target.rel);
 }
 
 // ── Stage 4: package ─────────────────────────────────────────────────────────

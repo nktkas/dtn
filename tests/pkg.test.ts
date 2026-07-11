@@ -72,6 +72,15 @@ Deno.test("planPackageJson", async (t) => {
     });
   });
 
+  await t.step("exports paths derive from plan.codeDir, not a literal segment", () => {
+    const p = { ...plan({ ".": "./src/mod.ts" }), codeDir: "/repo/dist/lib" };
+    const pkg = planPackageJson(analysis(p));
+    assertEquals((pkg as { exports: Record<string, unknown> }).exports["."], {
+      types: "./lib/mod.d.ts",
+      default: "./lib/mod.js",
+    });
+  });
+
   await t.step("computed fields win over author-supplied package.json", () => {
     const pkg = planPackageJson(
       analysis(
