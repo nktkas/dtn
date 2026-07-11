@@ -4,40 +4,25 @@
 // default `deno test` without external networking; the one fixture that fetches jsr.io is gated behind
 // DTN_INTEGRATION — run it with `deno task test:integration`.
 
-import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "jsr:@std/assert@1";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
+import { build, type BuildConfig, BuildError } from "../mod.ts";
 
-const ENGINE = new URL("../mod.ts", import.meta.url).href;
-// Engine modules use bare specifiers (e.g. `@std/path`); loaded by file:// from the fixture's cwd they would not
-// resolve, so point Deno at the engine's own deno.json import map via --config in the driver run below.
+// The CLI fixtures load cli.ts by file:// path; its bare specifiers (e.g. `@std/path`) resolve only through the
+// engine's own deno.json import map, passed via --config.
 const CONFIG = fromFileUrl(new URL("../deno.json", import.meta.url));
 const NET = Deno.env.get("DTN_INTEGRATION") === "1"; // gates only the pinned-jsr fixture, which fetches jsr.io
 
-// A static driver: it reads the fixture's deno.json and merges the extra build parameters from a sidecar JSON file,
-// so each fixture is pure data. It runs with cwd = the fixture dir, exactly as a real consumer would invoke build().
-const DRIVER = `
-import { build, BuildError } from ${JSON.stringify(ENGINE)};
-import denoJson from "./deno.json" with { type: "json" };
-const extra = JSON.parse(await Deno.readTextFile("./.dtn-build.json"));
-try {
-  await build({ denoJson, ...extra });
-  console.log("DTN_BUILD_OK");
-} catch (e) {
-  if (e instanceof BuildError) console.error("DTN_BUILD_ERROR_CODE=" + e.code);
-  throw e;
-}
-`;
-
 interface BuildResult {
   dir: string;
-  code: number;
-  stdout: string;
-  stderr: string;
+  error: BuildError | null;
 }
 
+// Runs build() in-process, rooted at a temp fixture dir; a BuildError comes back typed. The fixture's deno.json is
+// both written to disk (the transpile subprocess discovers compilerOptions from it) and passed as the config.
 async function withBuild(
   files: Record<string, string>,
-  buildCfg: Record<string, unknown>,
+  buildCfg: Omit<BuildConfig, "denoJson" | "root">,
   fn: (r: BuildResult) => Promise<void>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "dtn-it-" });
@@ -47,16 +32,14 @@ async function withBuild(
       await Deno.mkdir(dirname(p), { recursive: true });
       await Deno.writeTextFile(p, content);
     }
-    await Deno.writeTextFile(join(dir, ".dtn-build.json"), JSON.stringify(buildCfg));
-    await Deno.writeTextFile(join(dir, "driver.ts"), DRIVER);
-    const { code, stdout, stderr } = await new Deno.Command("deno", {
-      args: ["run", "-A", "--config", CONFIG, "driver.ts"],
-      cwd: dir,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    const dec = new TextDecoder();
-    await fn({ dir, code, stdout: dec.decode(stdout), stderr: dec.decode(stderr) });
+    let error: BuildError | null = null;
+    try {
+      await build({ ...buildCfg, root: dir, denoJson: JSON.parse(files["deno.json"]) });
+    } catch (e) {
+      if (!(e instanceof BuildError)) throw e;
+      error = e;
+    }
+    await fn({ dir, error });
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
@@ -82,10 +65,9 @@ Deno.test("integration — pure-local project: transpile, rewrite, source maps, 
         `import { helper } from "./util.ts";\nexport function greet(n: number): number {\n  return helper(n);\n}\n`,
     },
     { outDir: "dist" },
-    async ({ dir, code, stdout, stderr }) => {
+    async ({ dir, error }) => {
       await t.step("the build succeeds", () => {
-        assertEquals(code, 0, stderr);
-        assertStringIncludes(stdout, "DTN_BUILD_OK");
+        assertEquals(error, null, error?.message);
       });
 
       await t.step("emits .js / .d.ts / .js.map per local source", async () => {
@@ -122,8 +104,8 @@ Deno.test("integration — dynamic import() and import.meta.resolve are rewritte
         `export const here: string = import.meta.resolve("./util.ts");\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("both dynamic import() and import.meta.resolve() specifiers are rewritten .ts -> .js", async () => {
         const js = await Deno.readTextFile(join(dir, "dist/esm/mod.js"));
@@ -146,8 +128,8 @@ Deno.test("integration — a .d.ts-only entry point builds to a types-only expor
       "src/mod.ts": `export const value = 42;\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("the .d.ts entry is copied verbatim, with no emitted .js for it", async () => {
         assert(await exists(join(dir, "dist/esm/types.d.ts")), "types.d.ts missing");
@@ -174,8 +156,8 @@ Deno.test("integration — local .js/.json sources are copied verbatim and their
         `import { legacy } from "./legacy.js";\nexport const v = data.answer + legacy;\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("the .json source is copied byte-for-byte into esm/", async () => {
         assert(await exists(join(dir, "dist/esm/data.json")), "data.json not copied");
@@ -199,8 +181,8 @@ Deno.test("integration — copyFiles lands auxiliary files in the package root",
       "LICENSE": `MIT\n`,
     },
     { outDir: "dist", copyFiles: ["README.md", "LICENSE"] },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("each copyFiles entry lands at the package root with its content", async () => {
         assertEquals(await Deno.readTextFile(join(dir, "dist/README.md")), `# hi\n`);
@@ -218,8 +200,8 @@ Deno.test("integration — a relative .d.ts import is preserved (not rewritten t
       "src/mod.ts": `import type { T } from "./types.d.ts";\nexport function make(): T {\n  return { v: 1 };\n}\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step(
         "the .d.ts specifier stays `./types.d.ts` in the emitted declaration (not `./types.d.js`)",
@@ -241,8 +223,8 @@ Deno.test('integration — a JSON import keeps its `with { type: "json" }` attri
       "src/mod.ts": `export { default as config } from "./data.json" with { type: "json" };\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("restoreJsonAttributes re-adds the attribute the declaration emit drops", async () => {
         // The .js import is rewritten `.json` → still `.json`; the .d.ts re-export must carry `with { type: "json" }`.
@@ -262,9 +244,8 @@ Deno.test("integration — a config violation raised before any write leaves a p
       "dist/SENTINEL.txt": "previous build",
     },
     { outDir: "dist" },
-    async ({ dir, code, stderr }) => {
-      assert(code !== 0, "expected the build to fail");
-      assertStringIncludes(stderr, "DTN_BUILD_ERROR_CODE=INVALID_EXPORTS");
+    async ({ dir, error }) => {
+      assertEquals(error?.code, "INVALID_EXPORTS");
       assertEquals(
         await Deno.readTextFile(join(dir, "dist/SENTINEL.txt")),
         "previous build",
@@ -286,9 +267,8 @@ Deno.test("integration — documented limitations fail loudly (not silently mis-
           "src/mod.ts": `import x from "data:text/javascript,export default 1";\nexport const v = x;\n`,
         },
         { outDir: "dist" },
-        ({ code, stderr }) => {
-          assert(code !== 0, "a hostless remote dependency should fail the build");
-          assertStringIncludes(stderr, "DTN_BUILD_ERROR_CODE=UNSUPPORTED_VENDORED_DEPENDENCY");
+        ({ error }) => {
+          assertEquals(error?.code, "UNSUPPORTED_VENDORED_DEPENDENCY");
           return Promise.resolve();
         },
       );
@@ -307,11 +287,10 @@ Deno.test("integration — documented limitations fail loudly (not silently mis-
         "src/mod.ts": `import chalk from "scoped-only";\nexport const v = chalk;\n`,
       },
       { outDir: "dist" },
-      ({ code, stderr }) => {
+      ({ error }) => {
         // scopes is unsupported, so the import fails to resolve and the build fails loudly. The contract guarantees the
         // loud failure, not a specific code, so assert a typed BuildError without pinning which one.
-        assert(code !== 0, "scopes-dependent import should fail the build");
-        assertStringIncludes(stderr, "DTN_BUILD_ERROR_CODE=");
+        assert(error !== null, "scopes-dependent import should fail the build");
         return Promise.resolve();
       },
     );
@@ -327,8 +306,8 @@ Deno.test("integration — a types-only project (every export is a .d.ts) builds
       "types.d.ts": `export interface Config {\n  answer: number;\n}\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("the .d.ts is copied and the export is types-only", async () => {
         assert(await exists(join(dir, "dist/esm/types.d.ts")), "types.d.ts missing");
@@ -349,8 +328,8 @@ Deno.test("integration — a duplicate copyFiles entry overwrites rather than co
     // The same entry twice: the second copy targets a destination the first already created in this build, so it must
     // overwrite (overwrite: true) — not fail with AlreadyExists.
     { outDir: "dist", copyFiles: ["README.md", "README.md"] },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds (the second copy overwrites)", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds (the second copy overwrites)", () => assertEquals(error, null, error?.message));
 
       await t.step("the file lands at the package root with its content", async () => {
         assertEquals(await Deno.readTextFile(join(dir, "dist/README.md")), `# dup\n`);
@@ -370,9 +349,9 @@ Deno.test("integration — a directory whose name ends in a tracked extension is
       "src/mod.ts": `import { w } from "./widget.ts/impl.ts";\nexport const v = w;\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
+    async ({ dir, error }) => {
       await t.step("the build succeeds despite a `.ts`-named directory under the code root", () => {
-        assertEquals(code, 0, stderr);
+        assertEquals(error, null, error?.message);
       });
 
       await t.step("the nested source transpiles and its import is rewritten .ts -> .js", async () => {
@@ -390,8 +369,8 @@ Deno.test("integration — sourceMap: inline embeds a rebased map in the .js, wi
       "src/mod.ts": `export function inc(n: number): number {\n  return n + 1;\n}\n`,
     },
     { outDir: "dist", sourceMap: "inline" },
-    async ({ dir, code, stderr }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("the .js carries an inline map and no separate .js.map is emitted", async () => {
         const js = await Deno.readTextFile(join(dir, "dist/esm/mod.js"));
@@ -409,8 +388,8 @@ Deno.test("integration — sourceMap: none emits neither a .js.map nor a sourceM
       "src/mod.ts": `export function inc(n: number): number {\n  return n + 1;\n}\n`,
     },
     { outDir: "dist", sourceMap: "none" },
-    async ({ dir, code, stderr }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("no separate map is emitted and the .js carries no sourceMappingURL", async () => {
         assertEquals(await exists(join(dir, "dist/esm/mod.js.map")), false);
@@ -430,8 +409,8 @@ Deno.test("integration — wildcard exports (`./*`) expand to explicit per-file 
       "src/types.d.ts": `export interface T {\n  v: number;\n}\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("each matched source is built, and a relative import is rewritten", async () => {
         for (const f of ["esm/a.js", "esm/a.d.ts", "esm/b.js", "esm/b.d.ts", "esm/types.d.ts"]) {
@@ -468,8 +447,8 @@ Deno.test("integration — import-map aliases to local files are resolved and re
       "src/mod.ts": `import { u } from "$util";\nimport { h } from "@dir/helper.ts";\nexport const x = u + h;\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr, dir }) => {
-      await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+    async ({ dir, error }) => {
+      await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
       await t.step("both the exact and the prefix alias import are rewritten to relative .js paths", async () => {
         const js = await Deno.readTextFile(join(dir, "dist/esm/mod.js"));
@@ -488,7 +467,6 @@ Deno.test("integration — import-map aliases to local files are resolved and re
 
 Deno.test("integration — the CLI reads deno.json, parses flags, and builds the package", async () => {
   const cli = fromFileUrl(new URL("../cli.ts", import.meta.url));
-  const config = fromFileUrl(new URL("../deno.json", import.meta.url));
   const dir = await Deno.makeTempDir({ prefix: "dtn-cli-" });
   try {
     await Deno.mkdir(join(dir, "src"), { recursive: true });
@@ -503,7 +481,7 @@ Deno.test("integration — the CLI reads deno.json, parses flags, and builds the
     );
     await Deno.writeTextFile(join(dir, "README.md"), "# hi\n");
     const { code, stderr } = await new Deno.Command("deno", {
-      args: ["run", "-A", "--config", config, cli, "--out-dir", "out", "--copy", "README.md", "--source-map", "none"],
+      args: ["run", "-A", "--config", CONFIG, cli, "--out-dir", "out", "--copy", "README.md", "--source-map", "none"],
       cwd: dir,
       stdout: "piped",
       stderr: "piped",
@@ -520,7 +498,6 @@ Deno.test("integration — the CLI reads deno.json, parses flags, and builds the
 
 Deno.test("integration — CLI --deno-json in a subdirectory: config paths follow the config, outDir follows cwd", async () => {
   const cli = fromFileUrl(new URL("../cli.ts", import.meta.url));
-  const config = fromFileUrl(new URL("../deno.json", import.meta.url));
   const dir = await Deno.makeTempDir({ prefix: "dtn-cli-" });
   try {
     await Deno.mkdir(join(dir, "packages/lib/src/sub"), { recursive: true });
@@ -540,7 +517,7 @@ Deno.test("integration — CLI --deno-json in a subdirectory: config paths follo
       `import { u } from "$util";\nimport { h } from "@dir/helper.ts";\nexport const v: number = u + h;\n`,
     );
     const { code, stderr } = await new Deno.Command("deno", {
-      args: ["run", "-A", "--config", config, cli, "--deno-json", "packages/lib/deno.json", "--out-dir", "dist"],
+      args: ["run", "-A", "--config", CONFIG, cli, "--deno-json", "packages/lib/deno.json", "--out-dir", "dist"],
       cwd: dir,
       stdout: "piped",
       stderr: "piped",
@@ -549,6 +526,86 @@ Deno.test("integration — CLI --deno-json in a subdirectory: config paths follo
     assert(await exists(join(dir, "dist/esm/mod.js")), "mod.js missing");
     assert(await exists(join(dir, "dist/esm/util.js")), "the import-map-aliased util.js missing");
     assert(await exists(join(dir, "dist/esm/sub/helper.js")), "the folder-prefix-aliased helper.js missing");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("integration — build({ root }) builds a project in-process from elsewhere", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "dtn-root-" });
+  try {
+    await Deno.mkdir(join(dir, "proj/src"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "proj/src/mod.ts"), "export const n: number = 3;\n");
+    await build({
+      root: join(dir, "proj"),
+      outDir: "dist",
+      denoJson: { name: "@fx/root", version: "1.0.0", exports: "./src/mod.ts" },
+    });
+    // outDir resolves against the root.
+    assert(await exists(join(dir, "proj/dist/esm/mod.js")), "mod.js missing");
+    assert(await exists(join(dir, "proj/dist/package.json")), "package.json missing");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("integration — build({ root }) inherits the target project's compilerOptions, typed error in-process", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "dtn-root-" });
+  try {
+    await Deno.mkdir(join(dir, "proj/src"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "proj/deno.json"),
+      JSON.stringify({ compilerOptions: { noUnusedLocals: true } }),
+    );
+    await Deno.writeTextFile(
+      join(dir, "proj/src/mod.ts"),
+      "export function f(): number {\n  const unused = 1;\n  return 2;\n}\n",
+    );
+    const e = await assertRejects(
+      () =>
+        build({
+          root: join(dir, "proj"),
+          outDir: "dist",
+          denoJson: { name: "@fx/rootstrict", version: "1.0.0", exports: "./src/mod.ts" },
+        }),
+      BuildError,
+    );
+    assertEquals(e.code, "TRANSPILE_FAILED");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("integration — CLI --deno-json outside cwd builds the config's project", async () => {
+  const cli = fromFileUrl(new URL("../cli.ts", import.meta.url));
+  const dir = await Deno.makeTempDir({ prefix: "dtn-cli-" });
+  try {
+    await Deno.mkdir(join(dir, "proj/src"), { recursive: true });
+    await Deno.mkdir(join(dir, "work"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "proj/deno.json"),
+      JSON.stringify({
+        name: "@fx/away",
+        version: "1.0.0",
+        exports: "./src/mod.ts",
+        imports: { "$util": "./src/util.ts" },
+      }),
+    );
+    await Deno.writeTextFile(join(dir, "proj/src/util.ts"), "export const u: number = 1;\n");
+    await Deno.writeTextFile(
+      join(dir, "proj/src/mod.ts"),
+      `import { u } from "$util";\nexport const v: number = u + 1;\n`,
+    );
+    const { code, stderr } = await new Deno.Command("deno", {
+      args: ["run", "-A", "--config", CONFIG, cli, "--deno-json", "../proj/deno.json", "--out-dir", "dist"],
+      cwd: join(dir, "work"),
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(code, 0, new TextDecoder().decode(stderr));
+    // outDir keeps its cwd-relative CLI meaning even when the project root is elsewhere.
+    assert(await exists(join(dir, "work/dist/esm/mod.js")), "mod.js missing");
+    assert(await exists(join(dir, "work/dist/esm/util.js")), "util.js missing");
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
@@ -566,16 +623,16 @@ Deno.test("integration — the local pass inherits the project's compilerOptions
       "src/mod.ts": `export function f(): number {\n  const unused = 1;\n  return 2;\n}\n`,
     },
     { outDir: "dist" },
-    async ({ code, stderr }) => {
+    async ({ error }) => {
       await t.step("fails as TRANSPILE_FAILED, exactly as deno check would", () => {
-        assert(code !== 0, "a compilerOptions violation in the author's own code must fail the build");
-        assertStringIncludes(stderr, "DTN_BUILD_ERROR_CODE=TRANSPILE_FAILED");
+        assertEquals(error?.code, "TRANSPILE_FAILED");
       });
 
       await t.step("the compiler diagnostic leads the error message; the command echo trails it", () => {
-        const diag = stderr.indexOf("TS6133");
-        const echo = stderr.indexOf("exited with");
-        assert(diag !== -1 && echo !== -1, stderr);
+        assert(error !== null);
+        const diag = error.message.indexOf("TS6133");
+        const echo = error.message.indexOf("exited with");
+        assert(diag !== -1 && echo !== -1, error.message);
         assert(diag < echo, "the diagnostic must not be buried under the command echo");
       });
     },
@@ -604,8 +661,8 @@ Deno.test({
             `export const answer = config.answer;\n`,
         },
         { outDir: "dist" },
-        async ({ code, stderr, dir }) => {
-          assertEquals(code, 0, stderr);
+        async ({ dir, error }) => {
+          assertEquals(error, null, error?.message);
           // `any` here would mean the vendored asset was absent during the type-check.
           assertStringIncludes(
             await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts")),
@@ -645,8 +702,8 @@ Deno.test({
             `export const x: number = helper() + v;\n`,
         },
         { outDir: "dist" },
-        async ({ code, stderr, dir }) => {
-          assertEquals(code, 0, stderr);
+        async ({ dir, error }) => {
+          assertEquals(error, null, error?.message);
           const dep = `esm/_deps/${hostname}:${port}`;
           // The remote module and its sibling are inlined verbatim under _deps; the sibling import stays relative.
           assertStringIncludes(await Deno.readTextFile(join(dir, "dist", dep, "mod.js")), `from "./util.js"`);
@@ -687,8 +744,8 @@ Deno.test({
             `export const x: Config = { answer: 1 };\n`,
         },
         { outDir: "dist" },
-        async ({ code, stderr, dir }) => {
-          assertEquals(code, 0, stderr);
+        async ({ dir, error }) => {
+          assertEquals(error, null, error?.message);
           const dep = `esm/_deps/${hostname}:${port}`;
           assert(await exists(join(dir, "dist", dep, "types.d.ts")), "vendored types.d.ts missing");
           const dts = await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts"));
@@ -742,8 +799,8 @@ Deno.test({
           "src/mod.ts": `export { helper } from "http://${hostname}:${port}/dep.ts";\n`,
         },
         { outDir: "dist" },
-        async ({ code, stderr, dir }) => {
-          assertEquals(code, 0, stderr);
+        async ({ dir, error }) => {
+          assertEquals(error, null, error?.message);
           assert(await exists(join(dir, `dist/esm/_deps/${hostname}:${port}/dep.js`)), "vendored dep.js missing");
           assert(await exists(join(dir, `dist/esm/_deps/${hostname}:${port}/util.js`)), "vendored util.js missing");
         },
@@ -779,8 +836,8 @@ Deno.test({
           "src/mod.ts": `export { helper } from "http://${hostname}:${port}/dep.js";\n`,
         },
         { outDir: "dist" },
-        async ({ code, stderr, dir }) => {
-          assertEquals(code, 0, stderr);
+        async ({ dir, error }) => {
+          assertEquals(error, null, error?.message);
           // The SHIPPED copy stays clean — @ts-nocheck belongs only to the scratch-tree copy the checker reads.
           const shipped = await Deno.readTextFile(join(dir, `dist/esm/_deps/${hostname}:${port}/dep.js`));
           assert(!shipped.includes("@ts-nocheck"), "the shipped vendored copy must not carry @ts-nocheck");
@@ -814,8 +871,8 @@ Deno.test({
           "src/mod.ts": `export { answer } from "http://${hostname}:${port}/dep";\n`,
         },
         { outDir: "dist" },
-        async ({ code, stderr, dir }) => {
-          assertEquals(code, 0, stderr);
+        async ({ dir, error }) => {
+          assertEquals(error, null, error?.message);
           const dep = `esm/_deps/${hostname}:${port}`;
           assert(await exists(join(dir, "dist", dep, "dep.js")), "vendored dep.js missing");
           assertStringIncludes(
@@ -867,8 +924,8 @@ Deno.test({
           "src/mod.ts": `export { fromChain } from "http://${hostname}:${port}/a.ts";\n`,
         },
         { outDir: "dist" },
-        async ({ code, stderr, dir }) => {
-          assertEquals(code, 0, stderr);
+        async ({ dir, error }) => {
+          assertEquals(error, null, error?.message);
           const dep = `esm/_deps/${hostname}:${port}`;
           // The module is vendored under its FINAL URL, and the local importer points at it.
           assert(await exists(join(dir, "dist", dep, "c.js")), "vendored c.js (the chain's end) missing");
@@ -905,8 +962,8 @@ Deno.test({
         "src/sub.ts": `import { helper } from "./util.ts";\nexport const doubled = helper(21);\n`,
       },
       { outDir: "dist" },
-      async ({ dir, code, stderr }) => {
-        await t.step("the build succeeds", () => assertEquals(code, 0, stderr));
+      async ({ dir, error }) => {
+        await t.step("the build succeeds", () => assertEquals(error, null, error?.message));
 
         await t.step("the jsr dependency is vendored under _deps at its pinned version (.js + .d.ts)", async () => {
           const base = "dist/esm/_deps/jsr.io/@std/encoding/1.0.10/hex";

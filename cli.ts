@@ -11,10 +11,9 @@
 
 import { parseArgs } from "@std/cli/parse-args";
 import { bold, cyan, gray } from "@std/fmt/colors";
-import { dirname, relative, resolve } from "@std/path";
+import { dirname, resolve } from "@std/path";
 import { BuildError } from "./src/errors.ts";
 import { type DenoConfig, SOURCE_MAP_MODES } from "./src/intake.ts";
-import { isRelative, toPosix } from "./src/spec.ts";
 
 // deno-fmt-ignore
 const USAGE = `${bold("dtn")} — build a Deno project into a publish-ready npm package.
@@ -23,9 +22,9 @@ ${bold("Usage:")} deno run -A jsr:@nktkas/dtn/cli [options]
 
 ${bold("Options:")}
   ${cyan("--out-dir")} ${gray("<dir>")}                      Output directory (default: dist).
-  ${cyan("--deno-json")} ${gray("<path>")}                   deno.json to read the package facts from (default: deno.json).
+  ${cyan("--deno-json")} ${gray("<path>")}                   deno.json to read the package facts from (default: deno.json); its directory is the project root.
   ${cyan("--replace")} ${gray("<alias=name>")}               Replace an import-map alias with an npm package. Repeatable.
-  ${cyan("--copy")} ${gray("<file>")}                        Copy a file verbatim into the package root. Repeatable.
+  ${cyan("--copy")} ${gray("<file>")}                        Copy a project-root file verbatim into the package root. Repeatable.
   ${cyan("--source-map")} ${gray(`<${SOURCE_MAP_MODES.join("|")}>`)}  Source-map output (default: separate).
   ${cyan("--deps-dir")} ${gray("<dir>")}                     Folder under the code root for inlined dependencies (default: _deps).
   ${cyan("-h, --help")}                           Show this help.`;
@@ -58,42 +57,19 @@ export async function run(args: string[]): Promise<void> {
   }
 
   const configPath = flags["deno-json"] ?? "deno.json";
-  const denoJson = rebaseDenoJson(
-    JSON.parse(await Deno.readTextFile(configPath)) as DenoConfig,
-    dirname(resolve(configPath)),
-  );
+  const denoJson = JSON.parse(await Deno.readTextFile(configPath)) as DenoConfig;
 
   // Imported lazily so `--help` and argument errors do not load the engine (and its native oxc-parser).
   const { build } = await import("./mod.ts");
   await build({
-    outDir: flags["out-dir"] ?? "dist",
+    root: dirname(resolve(configPath)),
+    outDir: resolve(flags["out-dir"] ?? "dist"),
     denoJson,
     npmReplacements,
     copyFiles: flags.copy,
     sourceMap,
     depsDir: flags["deps-dir"],
   });
-}
-
-/**
- * Rebases the config's relative paths (exports, import-map targets) from the config file's directory onto cwd: Deno
- * resolves them against the config's own location, the engine against cwd.
- */
-function rebaseDenoJson(config: DenoConfig, configDir: string): DenoConfig {
-  const rebase = (path: string): string => {
-    if (!isRelative(path)) return path;
-    const rel = toPosix(relative(Deno.cwd(), resolve(configDir, path)));
-    const out = isRelative(rel) ? rel : `./${rel}`;
-    // resolve() eats a trailing "/", but a folder-prefix import-map target resolves by concatenation and needs it.
-    return path.endsWith("/") && !out.endsWith("/") ? `${out}/` : out;
-  };
-  const exports = typeof config.exports === "string"
-    ? rebase(config.exports)
-    : Object.fromEntries(Object.entries(config.exports).map(([subpath, source]) => [subpath, rebase(source)]));
-  const imports = config.imports === undefined
-    ? undefined
-    : Object.fromEntries(Object.entries(config.imports).map(([alias, target]) => [alias, rebase(target)]));
-  return { ...config, exports, imports };
 }
 
 if (import.meta.main) {

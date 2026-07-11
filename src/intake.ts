@@ -22,8 +22,14 @@ export interface DenoConfig {
 
 /** Everything the engine needs that is not derivable from `deno.json`, supplied as build parameters. */
 export interface BuildConfig {
-  /** Output directory, relative to the current working directory. */
+  /** Output directory, relative to the project root. */
   outDir: string;
+  /**
+   * Project root against which relative paths resolve.
+   *
+   * @default Deno.cwd()
+   */
+  root?: string;
   denoJson: DenoConfig;
   /**
    * Import-map aliases whose dependency is replaced by an npm package instead of being vendored.

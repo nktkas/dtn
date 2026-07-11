@@ -56,8 +56,10 @@ The `packageJson` config field has no flag — use the [programmatic API](#usage
 
 ```ts
 interface BuildConfig {
-  /** Output directory, relative to the current working directory. */
+  /** Output directory, relative to the project root. */
   outDir: string;
+  /** Project root against which relative paths resolve. @default Deno.cwd() */
+  root?: string;
   /** Package facts from `deno.json`. */
   denoJson: {
     name: string;

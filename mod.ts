@@ -37,6 +37,7 @@
  * @module
  */
 
+import { resolve } from "@std/path";
 import { analyze } from "./src/analyze.ts";
 import * as fs from "./src/fs.ts";
 import { type BuildConfig, intake } from "./src/intake.ts";
@@ -104,7 +105,7 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  * ```
  */
 export async function build(config: BuildConfig): Promise<void> {
-  const plan = await expandExports(intake(config, Deno.cwd()));
+  const plan = await expandExports(intake(config, resolve(config.root ?? ".")));
   const graph = await loadGraph(plan);
   const analysis = analyze(plan, graph);
 
