@@ -5,7 +5,7 @@
  * @module
  */
 
-import { createGraph } from "@deno/graph";
+import { createGraph, type MediaType } from "@deno/graph";
 import { createCache } from "@deno/cache-dir";
 import { expandGlob } from "@std/fs";
 import { join, relative, resolve, toFileUrl } from "@std/path";
@@ -19,10 +19,13 @@ export interface RawDependency {
   resolved: string | undefined;
 }
 
+/** A module's media type: the string values of `@deno/graph`'s `MediaType` enum, without its runtime object. */
+export type RawMediaType = `${MediaType}`;
+
 /** A graph module. `mediaType` is absent for npm and failed modules. */
 export interface RawModule {
   specifier: string;
-  mediaType: string | undefined;
+  mediaType: RawMediaType | undefined;
   error: string | undefined;
   dependencies: RawDependency[];
 }
@@ -99,9 +102,13 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
   });
 
   // `@deno/graph` records redirects (a versionless or aliased URL → its resolved target) but does not apply them to
-  // dependency edges; follow each resolved specifier through the table, or it matches no module in `graph.modules`.
-  const follow = (specifier: string | undefined): string | undefined =>
-    specifier === undefined ? undefined : (graph.redirects[specifier] ?? specifier);
+  // dependency edges — and a CLI-populated cache stores one entry per redirect hop, so the table must be followed
+  // transitively, or an intermediate hop matches no module in `graph.modules`.
+  const follow = (specifier: string | undefined): string | undefined => {
+    let current = specifier;
+    while (current !== undefined && graph.redirects[current] !== undefined) current = graph.redirects[current];
+    return current;
+  };
   const modules: RawModule[] = graph.modules.map((m) => ({
     specifier: m.specifier,
     mediaType: m.mediaType,

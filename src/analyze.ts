@@ -8,7 +8,7 @@
 import { common, dirname, fromFileUrl, relative } from "@std/path";
 import { BuildError } from "./errors.ts";
 import type { Plan } from "./intake.ts";
-import type { RawGraph, RawModule } from "./graph.ts";
+import type { RawGraph, RawMediaType, RawModule } from "./graph.ts";
 import {
   isRelative,
   jsrUrlPackage,
@@ -22,17 +22,14 @@ import {
 
 // ── Classification ──────────────────────────────────────────────────────────
 
-// These sets hold `@deno/graph`'s exact `mediaType` strings, matched against an untyped `module.mediaType`; a typo
-// silently routes a source to the unsupported-media throw, with no compile-time check.
-
 /** Local source media types copied into the package verbatim instead of being transpiled. */
-const COPY_MEDIA: ReadonlySet<string> = new Set(["JavaScript", "Mjs", "Cjs", "Json", "Dts", "Wasm"]);
+const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Cjs", "Json", "Dts", "Wasm"]);
 
 /** Remote media types vendored as raw byte assets instead of being transpiled. */
-const ASSET_MEDIA: ReadonlySet<string> = new Set(["Json", "Wasm"]);
+const ASSET_MEDIA: ReadonlySet<RawMediaType> = new Set(["Json", "Wasm"]);
 
 /** Remote media inlined verbatim — rewritten for Node, not transpiled: JavaScript modules and type declarations. */
-const VENDOR_COPY_MEDIA: ReadonlySet<string> = new Set(["JavaScript", "Mjs", "Cjs", "Dts"]);
+const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Cjs", "Dts"]);
 
 /** What becomes of a single reachable module. */
 type Fate =
@@ -230,14 +227,16 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
  *                       unsupported media type, or a hostless URL like `data:`).
  */
 function fateOf(module: RawModule, replacedJsrPackages: Map<string, string>, depsDir: string): Fate {
+  const media = module.mediaType;
+
   if (module.specifier.startsWith("file://")) {
     const path = fromFileUrl(module.specifier);
     if (module.error !== undefined) throw new BuildError("MODULE_LOAD_FAILED", module.error, path);
-    if (module.mediaType === "TypeScript") return { kind: "transpile", path };
-    if (COPY_MEDIA.has(module.mediaType ?? "")) return { kind: "copy", path };
+    if (media === "TypeScript") return { kind: "transpile", path };
+    if (media !== undefined && COPY_MEDIA.has(media)) return { kind: "copy", path };
     throw new BuildError(
       "UNSUPPORTED_LOCAL_SOURCE",
-      `local source has unsupported media type ${module.mediaType}; expected .ts .js .mjs .cjs .json .d.ts`,
+      `local source has unsupported media type ${media}; expected .ts .js .mjs .cjs .json .d.ts`,
       path,
     );
   }
@@ -263,12 +262,12 @@ function fateOf(module: RawModule, replacedJsrPackages: Map<string, string>, dep
     );
   }
   const rel = vendoredRel(module.specifier, depsDir);
-  if (module.mediaType === "TypeScript") return { kind: "vendorCode", url: module.specifier, rel: tsToJs(rel) };
-  if (VENDOR_COPY_MEDIA.has(module.mediaType ?? "")) return { kind: "vendorCopy", url: module.specifier, rel };
-  if (ASSET_MEDIA.has(module.mediaType ?? "")) return { kind: "vendorAsset", url: module.specifier, rel };
+  if (media === "TypeScript") return { kind: "vendorCode", url: module.specifier, rel: tsToJs(rel) };
+  if (media !== undefined && VENDOR_COPY_MEDIA.has(media)) return { kind: "vendorCopy", url: module.specifier, rel };
+  if (media !== undefined && ASSET_MEDIA.has(media)) return { kind: "vendorAsset", url: module.specifier, rel };
   throw new BuildError(
     "UNSUPPORTED_VENDORED_DEPENDENCY",
-    `vendored dependency has unsupported media type ${module.mediaType}; expected .ts, .js, or JSON/Wasm`,
+    `vendored dependency has unsupported media type ${media}; expected .ts, .js, or JSON/Wasm`,
     module.specifier,
   );
 }

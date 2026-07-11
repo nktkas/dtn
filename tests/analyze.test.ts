@@ -2,7 +2,7 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { analyze } from "../src/analyze.ts";
 import { BuildError } from "../src/errors.ts";
-import type { RawDependency, RawGraph, RawModule } from "../src/graph.ts";
+import type { RawDependency, RawGraph, RawMediaType, RawModule } from "../src/graph.ts";
 import type { Plan } from "../src/intake.ts";
 
 const REPO = "/repo";
@@ -34,7 +34,7 @@ function fileUrl(rel: string): string {
   return `file://${REPO}/${rel}`;
 }
 
-function mod(specifier: string, mediaType: string | undefined, deps: RawDependency[], error?: string): RawModule {
+function mod(specifier: string, mediaType: RawMediaType | undefined, deps: RawDependency[], error?: string): RawModule {
   return { specifier, mediaType, error, dependencies: deps };
 }
 

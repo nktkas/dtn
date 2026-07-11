@@ -3,7 +3,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import { resolve, toFileUrl } from "jsr:@std/path@^1";
 import type { PackageJson } from "type-fest";
 import { type Analysis, analyze } from "../src/analyze.ts";
-import type { RawDependency, RawGraph, RawModule } from "../src/graph.ts";
+import type { RawDependency, RawGraph, RawMediaType, RawModule } from "../src/graph.ts";
 import type { Plan } from "../src/intake.ts";
 import { planPackageJson } from "../src/pkg.ts";
 
@@ -33,7 +33,7 @@ function dep(specifier: string, resolved: string | undefined): RawDependency {
   return { specifier, resolved };
 }
 
-function mod(specifier: string, mediaType: string | undefined, deps: RawDependency[] = []): RawModule {
+function mod(specifier: string, mediaType: RawMediaType | undefined, deps: RawDependency[] = []): RawModule {
   return { specifier, mediaType, error: undefined, dependencies: deps };
 }
 

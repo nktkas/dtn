@@ -39,6 +39,7 @@ async function withBuild(
   files: Record<string, string>,
   buildCfg: Record<string, unknown>,
   fn: (r: BuildResult) => Promise<void>,
+  env?: Record<string, string>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "dtn-it-" });
   try {
@@ -52,6 +53,7 @@ async function withBuild(
     const { code, stdout, stderr } = await new Deno.Command("deno", {
       args: ["run", "-A", "--config", CONFIG, "driver.ts"],
       cwd: dir,
+      env,
       stdout: "piped",
       stderr: "piped",
     }).output();
@@ -640,6 +642,66 @@ Deno.test({
     } finally {
       ac.abort();
       await server.finished;
+    }
+  },
+});
+
+Deno.test({
+  name: "integration — a remote redirect chain is followed to its final module",
+  ignore: !NET,
+  fn: async () => {
+    // A cache populated by the Deno CLI stores every redirect hop separately, so `@deno/graph` reports a chained redirects table (a → b, b → c).
+    // The engine must follow the chain to its end: stopping at an intermediate hop leaves a dependency that matches no module in the graph.
+    // The fixture pre-caches through `deno cache` into an isolated DENO_DIR — the organic state of a project that was run before being built.
+    const ac = new AbortController();
+    const server = Deno.serve(
+      { hostname: "127.0.0.1", port: 0, signal: ac.signal, onListen: () => {} },
+      (req) => {
+        const path = new URL(req.url).pathname;
+        const origin = new URL(req.url).origin;
+        if (path === "/a.ts") return new Response(null, { status: 302, headers: { location: `${origin}/b.ts` } });
+        if (path === "/b.ts") return new Response(null, { status: 302, headers: { location: `${origin}/c.ts` } });
+        if (path === "/c.ts") {
+          return new Response(`export const fromChain: number = 7;\n`, {
+            headers: { "content-type": "application/typescript; charset=utf-8" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { hostname, port } = server.addr as Deno.NetAddr;
+    const denoDir = await Deno.makeTempDir({ prefix: "dtn-redirect-cache-" });
+    try {
+      const cache = await new Deno.Command("deno", {
+        args: ["cache", `http://${hostname}:${port}/a.ts`],
+        env: { DENO_DIR: denoDir },
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assertEquals(cache.code, 0, new TextDecoder().decode(cache.stderr));
+
+      await withBuild(
+        {
+          "deno.json": JSON.stringify({ name: "@fx/redirect", version: "1.0.0", exports: { ".": "./src/mod.ts" } }),
+          "src/mod.ts": `export { fromChain } from "http://${hostname}:${port}/a.ts";\n`,
+        },
+        { outDir: "dist" },
+        async ({ code, stderr, dir }) => {
+          assertEquals(code, 0, stderr);
+          const dep = `esm/_deps/${hostname}:${port}`;
+          // The module is vendored under its FINAL URL, and the local importer points at it.
+          assert(await exists(join(dir, "dist", dep, "c.js")), "vendored c.js (the chain's end) missing");
+          assertStringIncludes(
+            await Deno.readTextFile(join(dir, "dist/esm/mod.js")),
+            `from "./_deps/${hostname}:${port}/c.js"`,
+          );
+        },
+        { DENO_DIR: denoDir },
+      );
+    } finally {
+      ac.abort();
+      await server.finished;
+      await Deno.remove(denoDir, { recursive: true }).catch(() => {});
     }
   },
 });
