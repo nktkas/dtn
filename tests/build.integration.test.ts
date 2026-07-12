@@ -117,10 +117,9 @@ Deno.test("integration — local project emits ESM, declarations, corrected maps
 
       await t.step("the runtime specifier points at JavaScript and declarations remain typed", async () => {
         assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.js")), `from "./util.js"`);
-        assertStringIncludes(
-          await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts")),
-          `export declare function greet(n: number): number;`,
-        );
+        const declaration = await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts"));
+        assertStringIncludes(declaration, `export declare function greet(n: number): number;`);
+        assertEquals(declaration.includes(`/// <amd-module name="file:///`), false);
       });
 
       await t.step("the separate map keeps original source provenance and is linked from JavaScript", async () => {

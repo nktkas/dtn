@@ -5,7 +5,7 @@
  */
 
 import { copy, ensureDir, exists, walk } from "@std/fs";
-import { dirname } from "@std/path";
+import { dirname, join } from "@std/path";
 import { BuildError } from "./errors.ts";
 
 export { exists };
@@ -111,6 +111,17 @@ export async function transpile(options: TranspileOptions): Promise<void> {
       options.outDir,
       ...options.files,
     ], options.cwd);
+
+    // HACK:
+    // Declaration emit assigns absolute file-URL AMD names to ESM modules, exposing the build path in package types.
+    for (const file of options.files) {
+      const path = join(options.outDir, file).replace(/\.ts$/, ".d.ts");
+      const declaration = await readText(path);
+      await Deno.writeTextFile(
+        path,
+        declaration.replace(/^\/\/\/ <amd-module name="file:\/\/\/[^"\r\n]+" \/>\r?\n/, ""),
+      );
+    }
   } catch (e) {
     throw new BuildError("EMIT_FAILED", e instanceof Error ? e.message : String(e), { cause: e });
   }
