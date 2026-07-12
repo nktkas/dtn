@@ -1,24 +1,28 @@
 // deno-lint-ignore-file no-import-prefix
 
 /**
- * End-to-end builds through the real graph, cache, and `deno transpile`; only the pinned JSR fixture needs networking.
+ * End-to-end builds through the real graph, cache, and `deno transpile`.
+ * Networked registry and consumer checks require `DTN_INTEGRATION=1`.
  *
  * @module
  */
 
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { exists } from "jsr:@std/fs@1";
-import { dirname, join } from "jsr:@std/path@^1";
+import { copy, exists } from "jsr:@std/fs@1";
+import { dirname, join, toFileUrl } from "jsr:@std/path@^1";
 import { build, type BuildConfig, BuildError } from "../mod.ts";
 import { tsToJs, vendoredRel } from "../src/spec.ts";
 
 const NETWORK = Deno.env.get("DTN_INTEGRATION") === "1";
+const NPM_COMMAND = Deno.build.os === "windows" ? "npm.cmd" : "npm";
 
+/** The temporary project and captured domain failure supplied to a build assertion. */
 interface BuildResult {
   dir: string;
   error: BuildError | null;
 }
 
+/** Builds one temporary project and removes it after its assertions finish. */
 async function withBuild(
   files: Record<string, string>,
   config: Omit<BuildConfig, "denoJson" | "root">,
@@ -42,6 +46,55 @@ async function withBuild(
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
+}
+
+/** Copies a generated package into a consumer's `node_modules` tree. */
+async function installPackage(source: string, consumer: string, name: string): Promise<void> {
+  const target = join(consumer, "node_modules", ...name.split("/"));
+  await Deno.mkdir(dirname(target), { recursive: true });
+  await copy(source, target, { overwrite: true });
+}
+
+/** Runs a consumer command and returns stdout, failing with the captured diagnostics. */
+async function runCommand(command: string, args: string[], cwd: string): Promise<string> {
+  const { code, stdout, stderr } = await new Deno.Command(command, {
+    args,
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const decoder = new TextDecoder();
+  if (code !== 0) {
+    throw new Error(
+      [decoder.decode(stdout), decoder.decode(stderr), `(${command} ${args.join(" ")} exited with ${code})`]
+        .filter((part) => part.length > 0)
+        .join("\n"),
+    );
+  }
+  return decoder.decode(stdout).trim();
+}
+
+/** Type-checks one ESM consumer with TypeScript's NodeNext package resolution. */
+async function checkNodeNext(consumer: string, source: string): Promise<void> {
+  await Deno.writeTextFile(join(consumer, "consumer.ts"), source);
+  await Deno.writeTextFile(
+    join(consumer, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        target: "ES2022",
+        strict: true,
+        noEmit: true,
+      },
+      include: ["consumer.ts"],
+    }),
+  );
+  await runCommand(
+    Deno.execPath(),
+    ["run", "-A", "npm:typescript@5.9.3/bin/tsc", "--project", "tsconfig.json"],
+    consumer,
+  );
 }
 
 Deno.test("integration — local project emits ESM, declarations, corrected maps, and package metadata", async (t) => {
@@ -74,7 +127,7 @@ Deno.test("integration — local project emits ESM, declarations, corrected maps
         const js = await Deno.readTextFile(join(dir, "dist/esm/mod.js"));
         assertStringIncludes(js, "//# sourceMappingURL=mod.js.map");
         const map = JSON.parse(await Deno.readTextFile(join(dir, "dist/esm/mod.js.map")));
-        assertEquals(map.sources, [`file://${join(dir, "src/mod.ts")}`]);
+        assertEquals(map.sources, [toFileUrl(join(dir, "src/mod.ts")).href]);
         assertEquals(map.sourcesContent, [mod]);
       });
 
@@ -146,6 +199,99 @@ Deno.test("integration — multiple exports, package merge, and copyFiles", asyn
       assertEquals(await Deno.readTextFile(join(dir, "dist/README.md")), `# package\n`);
     },
   );
+});
+
+Deno.test({
+  name: "integration — generated root and subpath exports work in Node and TypeScript NodeNext",
+  ignore: !NETWORK,
+  fn: async (t) => {
+    await withBuild(
+      {
+        "deno.json": JSON.stringify({
+          name: "@fx/consumer",
+          version: "1.0.0",
+          exports: { ".": "./src/mod.ts", "./sub": "./src/sub.ts" },
+        }),
+        "src/mod.ts": `export const root = 1 as const;\n`,
+        "src/sub.ts": `export function sub(value: number): string {\n  return String(value);\n}\n`,
+      },
+      { outDir: "dist" },
+      async ({ dir, error }) => {
+        assertEquals(error, null, error?.message);
+        const consumer = join(dir, "consumer");
+        await installPackage(join(dir, "dist"), consumer, "@fx/consumer");
+        await Deno.writeTextFile(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
+
+        await t.step("Node resolves and executes both package exports", async () => {
+          await Deno.writeTextFile(
+            join(consumer, "runtime.js"),
+            `import { root } from "@fx/consumer";\nimport { sub } from "@fx/consumer/sub";\nconsole.log(root + ":" + sub(2));\n`,
+          );
+          assertEquals(await runCommand("node", ["runtime.js"], consumer), "1:2");
+        });
+
+        await t.step("TypeScript resolves both declaration exports with NodeNext", async () => {
+          await checkNodeNext(
+            consumer,
+            `import { root } from "@fx/consumer";\nimport { sub } from "@fx/consumer/sub";\nconst exact: 1 = root;\nconst text: string = sub(exact);\nvoid text;\n`,
+          );
+        });
+      },
+    );
+  },
+});
+
+Deno.test({
+  name: "integration — npm replacement survives build, package metadata, and Node consumption",
+  ignore: !NETWORK,
+  fn: async () => {
+    await withBuild(
+      {
+        "deno.json": JSON.stringify({
+          name: "@fx/replacement",
+          version: "1.0.0",
+          exports: "./src/mod.ts",
+          imports: { "@valibot/valibot": "jsr:@valibot/valibot@1" },
+        }),
+        "src/mod.ts": `import * as v from "@valibot/valibot";\nexport const value = v.literal("replacement-ok");\n`,
+      },
+      { outDir: "dist", npmReplacements: { "@valibot/valibot": "valibot@^1" } },
+      async ({ dir, error }) => {
+        assertEquals(error, null, error?.message);
+        assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.js")), `from "valibot"`);
+        assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts")), `from "valibot"`);
+        const pkg = JSON.parse(await Deno.readTextFile(join(dir, "dist/package.json")));
+        assertEquals(pkg.dependencies, { valibot: "^1" });
+
+        const consumer = join(dir, "consumer");
+        await Deno.mkdir(consumer, { recursive: true });
+        await Deno.writeTextFile(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
+        const packed = JSON.parse(
+          await runCommand(
+            NPM_COMMAND,
+            ["pack", join(dir, "dist"), "--pack-destination", consumer, "--json"],
+            consumer,
+          ),
+        );
+        await runCommand(
+          NPM_COMMAND,
+          ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(consumer, packed[0].filename)],
+          consumer,
+        );
+
+        await Deno.writeTextFile(
+          join(consumer, "runtime.js"),
+          `import { value } from "@fx/replacement";\nconsole.log(value.literal);\n`,
+        );
+        assertEquals(await runCommand("node", ["runtime.js"], consumer), "replacement-ok");
+
+        await checkNodeNext(
+          consumer,
+          `import { value } from "@fx/replacement";\nconst literal: "replacement-ok" = value.literal;\nvoid literal;\n`,
+        );
+      },
+    );
+  },
 });
 
 Deno.test("integration — removed config features fail before replacing prior output", async (t) => {
