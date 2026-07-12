@@ -126,6 +126,14 @@ interface SourceMap {
   mappings: string;
 }
 
+/** Replaces the compiler's absolute local source URL with a stable path relative to the final map. */
+export function setSourceMapSource(text: string, source: string, filename: string): string {
+  const map = parseSourceMap(text, filename);
+  delete map.sourceRoot;
+  map.sources = [source];
+  return JSON.stringify(map);
+}
+
 /** Updates generated positions after edits to emitted JavaScript. */
 export function updateGeneratedSourceMap(
   text: string,

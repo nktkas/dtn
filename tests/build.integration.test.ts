@@ -9,7 +9,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { copy, exists } from "jsr:@std/fs@1";
-import { dirname, join, toFileUrl } from "jsr:@std/path@^1";
+import { dirname, join } from "jsr:@std/path@^1";
 import { build, type BuildConfig, BuildError } from "../mod.ts";
 import { tsToJs, vendoredRel } from "../src/spec.ts";
 
@@ -126,7 +126,7 @@ Deno.test("integration — local project emits ESM, declarations, corrected maps
         const js = await Deno.readTextFile(join(dir, "dist/esm/mod.js"));
         assertStringIncludes(js, "//# sourceMappingURL=mod.js.map");
         const map = JSON.parse(await Deno.readTextFile(join(dir, "dist/esm/mod.js.map")));
-        assertEquals(map.sources, [toFileUrl(join(dir, "src/mod.ts")).href]);
+        assertEquals(map.sources, ["../../src/mod.ts"]);
         assertEquals(map.sourcesContent, [mod]);
       });
 

@@ -6,7 +6,7 @@
  * @module
  */
 
-import { basename, join, relative } from "@std/path";
+import { basename, dirname, join, relative } from "@std/path";
 import type { Analysis, SpecifierIndex } from "./analyze.ts";
 import * as fs from "./fs.ts";
 import type { RawGraph } from "./graph.ts";
@@ -14,6 +14,7 @@ import { planPackageJson } from "./pkg.ts";
 import {
   restoreSourceMapSource,
   rewriteSpecifiers,
+  setSourceMapSource,
   sourceMappingComment,
   updateGeneratedSourceMap,
 } from "./rewrite.ts";
@@ -132,6 +133,13 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
     const from = join(out, relative(plan.repoRoot, file)).replace(/\.ts$/, "");
     const to = join(plan.codeDir, relative(srcRoot, file)).replace(/\.ts$/, "");
     for (const extension of EMITTED_EXTENSIONS) await fs.moveEmitted(from + extension, to + extension);
+    const mapPath = `${to}.js.map`;
+    const map = setSourceMapSource(
+      await fs.readText(mapPath),
+      toPosix(relative(dirname(mapPath), file)),
+      mapPath,
+    );
+    await fs.writeText(mapPath, map);
   }
 
   // Non-`.ts` local sources go in verbatim; the rewrite stage still adjusts their import specifiers.
