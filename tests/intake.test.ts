@@ -77,6 +77,7 @@ Deno.test("intake — invalid config", async (t) => {
       { ".": "" },
       { ".": "./src/types.d.ts" },
       { "./*": "./src/*.ts" },
+      { sub: "./src/sub.ts" },
       { ".": "./src/mod.js" },
       { ".": "./src/mod.tsx" },
     ];

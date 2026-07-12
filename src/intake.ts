@@ -166,6 +166,9 @@ function normalizeExports(exports: string | Record<string, string>): Record<stri
     if (source.length === 0) {
       throw new BuildError("INVALID_CONFIG", "export entry is not a source path", { subject: subpath });
     }
+    if (subpath !== "." && !subpath.startsWith("./")) {
+      throw new BuildError("INVALID_CONFIG", "export key must be '.' or start with './'", { subject: subpath });
+    }
     if (!source.endsWith(".ts") || source.endsWith(".d.ts") || source.includes("*") || subpath.includes("*")) {
       throw new BuildError("INVALID_CONFIG", "export entry must be one explicit runtime .ts source", {
         subject: `${subpath} → ${source}`,
