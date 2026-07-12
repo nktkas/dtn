@@ -99,7 +99,7 @@ interface TranspileOptions {
  */
 export async function transpile(options: TranspileOptions): Promise<void> {
   try {
-    await run("deno", [
+    await run(Deno.execPath(), [
       "transpile",
       ...(options.config === "none" ? ["--no-config", "--no-lock"] : []),
       "--import-map",
