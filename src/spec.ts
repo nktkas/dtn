@@ -167,8 +167,7 @@ export function makeResolver(imports: Record<string, string>): (specifier: strin
   // Deno's deno.json imports extend import maps by treating package aliases without a trailing slash as prefixes.
   const prefixes = Object.keys(imports).sort((a, b) => b.length - a.length);
   return (specifier, referrer) => {
-    const exact = imports[specifier];
-    if (exact !== undefined) return exact;
+    if (Object.hasOwn(imports, specifier)) return imports[specifier];
     for (const key of prefixes) {
       const boundary = key.endsWith("/") ? key : `${key}/`;
       if (specifier.startsWith(boundary)) return imports[key] + specifier.slice(key.length);

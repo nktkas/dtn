@@ -95,5 +95,7 @@ Deno.test("makeResolver", async (t) => {
   await t.step("resolves relative URLs but leaves an unmapped bare specifier bare", () => {
     assertEquals(resolve("./util.ts", referrer), "file:///repo/src/util.ts");
     assertEquals(resolve("unknown", referrer), "unknown");
+    assertEquals(resolve("constructor", referrer), "constructor");
+    assertEquals(resolve("__proto__", referrer), "__proto__");
   });
 });

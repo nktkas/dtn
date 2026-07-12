@@ -70,7 +70,7 @@ export interface Analysis {
  * @throws {BuildError} `DEPENDENCY_FAILED` when a module cannot be loaded or an edge cannot become package output.
  */
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
-  const npmDeps: Record<string, string> = {};
+  const npmDeps = new Map<string, string>();
   const aliases: AliasBinding[] = [];
   const replacedJsrPackages = new Map<string, string>();
 
@@ -81,17 +81,17 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     }
     const parsedTarget = parseRegistry(plan.imports[alias]);
     const version = parsedReplacement.version ?? parsedTarget?.version ?? "*";
-    npmDeps[parsedReplacement.name] = version;
+    npmDeps.set(parsedReplacement.name, version);
     aliases.push({ alias, npmName: parsedReplacement.name, subpath: parsedTarget?.subpath ?? "", version });
     if (parsedTarget?.scheme === "jsr") replacedJsrPackages.set(parsedTarget.pkg, parsedReplacement.name);
   }
 
   for (const [alias, specifier] of Object.entries(plan.imports)) {
-    if (alias in plan.npmReplacements) continue;
+    if (Object.hasOwn(plan.npmReplacements, alias)) continue;
     const npm = parseRegistry(specifier);
     if (npm?.scheme !== "npm") continue;
     const version = npm.version ?? "*";
-    npmDeps[npm.pkg] = version;
+    npmDeps.set(npm.pkg, version);
     aliases.push({ alias, npmName: npm.pkg, subpath: npm.subpath, version });
   }
 
@@ -115,7 +115,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     const fate = fateOf(module, replacedJsrPackages, plan.depsDir);
     fates.set(specifier, fate);
     if (fate.kind === "external") {
-      if (fate.npm !== null) npmDeps[fate.npm.name] ??= fate.npm.version;
+      if (fate.npm !== null && !npmDeps.has(fate.npm.name)) npmDeps.set(fate.npm.name, fate.npm.version);
       continue;
     }
 
@@ -181,7 +181,8 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     }
   }
 
-  const specifiers = new SpecifierIndex({ edges, aliases, replacedJsrPackages, npmDeps });
+  const npmDepsRecord = Object.fromEntries(npmDeps);
+  const specifiers = new SpecifierIndex({ edges, aliases, replacedJsrPackages, npmDeps: npmDepsRecord });
   validateSpecifiers(reachable, specifiers);
 
   return {
@@ -192,7 +193,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     vendoredCode,
     vendoredCopies,
     sourceByOutput,
-    npmDeps,
+    npmDeps: npmDepsRecord,
     specifiers,
   };
 }
@@ -338,23 +339,25 @@ export class SpecifierIndex {
 
   /** Import map used while declarations are emitted from local sources. */
   declarationImportMap(): Record<string, string> {
-    const map: Record<string, string> = {};
+    const map = new Map<string, string>();
     for (const { alias, npmName, subpath, version } of this._aliases) {
-      map[alias] = `npm:${npmName}@${version}${subpath}`;
+      map.set(alias, `npm:${npmName}@${version}${subpath}`);
     }
     for (const [referrer, edges] of this._edges) {
       if (!referrer.startsWith("file://")) continue;
       for (const [specifier, target] of edges) {
-        if (!isRelative(specifier) && target.kind === "vendored") map[specifier] ??= `./${target.src}`;
+        if (!isRelative(specifier) && target.kind === "vendored" && !map.has(specifier)) {
+          map.set(specifier, `./${target.src}`);
+        }
       }
     }
-    return map;
+    return Object.fromEntries(map);
   }
 
   /** Import map used while declarations are emitted from vendored JSR sources. */
   vendorImportMap(): Record<string, string> {
-    const map: Record<string, string> = {};
-    for (const [name, version] of Object.entries(this._npmDeps)) map[name] = `npm:${name}@${version}`;
-    return map;
+    return Object.fromEntries(
+      Object.entries(this._npmDeps).map(([name, version]) => [name, `npm:${name}@${version}`]),
+    );
   }
 }

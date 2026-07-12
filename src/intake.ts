@@ -124,8 +124,7 @@ export function intake(config: BuildConfig, repoRoot: string): Plan {
   }
 
   for (const [alias, replacement] of Object.entries(npmReplacements)) {
-    const target = imports[alias];
-    if (target === undefined) {
+    if (!Object.hasOwn(imports, alias)) {
       throw new BuildError("INVALID_CONFIG", "npmReplacements alias is missing from the deno.json import map", {
         subject: alias,
       });

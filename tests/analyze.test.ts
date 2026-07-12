@@ -275,6 +275,45 @@ Deno.test("analyze — npm replacements", async (t) => {
   });
 });
 
+Deno.test("analyze — prototype-key aliases and npm packages remain own entries", () => {
+  const root = fileUrl("src/mod.ts");
+  const analysis = analyze(
+    plan(
+      {},
+      Object.fromEntries([
+        ["constructor", "npm:chalk@^5"],
+        ["__proto__", "npm:kleur@^4"],
+      ]),
+    ),
+    graph([
+      module(root, "TypeScript", [
+        dependency("constructor", "npm:chalk@^5"),
+        dependency("__proto__", "npm:kleur@^4"),
+        dependency("npm:constructor@0.0.6", "npm:constructor@0.0.6"),
+      ]),
+      module("npm:chalk@^5", undefined),
+      module("npm:kleur@^4", undefined),
+      module("npm:constructor@0.0.6", undefined),
+    ]),
+  );
+
+  assertEquals(
+    analysis.npmDeps,
+    Object.fromEntries([
+      ["chalk", "^5"],
+      ["kleur", "^4"],
+      ["constructor", "0.0.6"],
+    ]),
+  );
+  assertEquals(
+    analysis.specifiers.declarationImportMap(),
+    Object.fromEntries([
+      ["constructor", "npm:chalk@^5"],
+      ["__proto__", "npm:kleur@^4"],
+    ]),
+  );
+});
+
 Deno.test("analyze — load and resolution failures share DEPENDENCY_FAILED", () => {
   throwsCode([module(fileUrl("src/mod.ts"), undefined, [], "load rejected")], "DEPENDENCY_FAILED");
   throwsCode([
