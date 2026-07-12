@@ -10,12 +10,9 @@
 
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "jsr:@std/assert@1";
 import { exists } from "jsr:@std/fs@1";
-import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
+import { dirname, join } from "jsr:@std/path@^1";
 import { build, type BuildConfig, BuildError } from "../mod.ts";
 
-// The CLI fixtures load cli.ts by file:// path; its bare specifiers (e.g. `@std/path`) resolve only through the
-// engine's own deno.json import map, passed via --config.
-const CONFIG = fromFileUrl(new URL("../deno.json", import.meta.url));
 const NET = Deno.env.get("DTN_INTEGRATION") === "1"; // gates only the pinned-jsr fixture, which fetches jsr.io
 
 interface BuildResult {
@@ -463,72 +460,6 @@ Deno.test("integration — import-map aliases to local files are resolved and re
   );
 });
 
-Deno.test("integration — the CLI reads deno.json, parses flags, and builds the package", async () => {
-  const cli = fromFileUrl(new URL("../cli.ts", import.meta.url));
-  const dir = await Deno.makeTempDir({ prefix: "dtn-cli-" });
-  try {
-    await Deno.mkdir(join(dir, "src"), { recursive: true });
-    await Deno.writeTextFile(
-      join(dir, "deno.json"),
-      JSON.stringify({ name: "@fx/cli", version: "1.0.0", exports: "./src/mod.ts" }),
-    );
-    await Deno.writeTextFile(join(dir, "src/util.ts"), "export const u: number = 1;\n");
-    await Deno.writeTextFile(
-      join(dir, "src/mod.ts"),
-      `import { u } from "./util.ts";\nexport const v: number = u + 1;\n`,
-    );
-    await Deno.writeTextFile(join(dir, "README.md"), "# hi\n");
-    const { code, stderr } = await new Deno.Command("deno", {
-      args: ["run", "-A", "--config", CONFIG, cli, "--out-dir", "out", "--copy", "README.md", "--source-map", "none"],
-      cwd: dir,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assertEquals(code, 0, new TextDecoder().decode(stderr));
-    assert(await exists(join(dir, "out/esm/mod.js")), "mod.js missing");
-    assert(await exists(join(dir, "out/package.json")), "package.json missing");
-    assert(await exists(join(dir, "out/README.md")), "the --copy file is missing");
-    assertEquals(await exists(join(dir, "out/esm/mod.js.map")), false, "--source-map none must not emit a .js.map");
-  } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
-});
-
-Deno.test("integration — CLI --deno-json in a subdirectory: config paths follow the config, outDir follows cwd", async () => {
-  const cli = fromFileUrl(new URL("../cli.ts", import.meta.url));
-  const dir = await Deno.makeTempDir({ prefix: "dtn-cli-" });
-  try {
-    await Deno.mkdir(join(dir, "packages/lib/src/sub"), { recursive: true });
-    await Deno.writeTextFile(
-      join(dir, "packages/lib/deno.json"),
-      JSON.stringify({
-        name: "@fx/rebase",
-        version: "1.0.0",
-        exports: "./src/mod.ts",
-        imports: { "$util": "./src/util.ts", "@dir/": "./src/sub/" },
-      }),
-    );
-    await Deno.writeTextFile(join(dir, "packages/lib/src/util.ts"), "export const u: number = 1;\n");
-    await Deno.writeTextFile(join(dir, "packages/lib/src/sub/helper.ts"), "export const h: number = 2;\n");
-    await Deno.writeTextFile(
-      join(dir, "packages/lib/src/mod.ts"),
-      `import { u } from "$util";\nimport { h } from "@dir/helper.ts";\nexport const v: number = u + h;\n`,
-    );
-    const { code, stderr } = await new Deno.Command("deno", {
-      args: ["run", "-A", "--config", CONFIG, cli, "--deno-json", "packages/lib/deno.json", "--out-dir", "dist"],
-      cwd: dir,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assertEquals(code, 0, new TextDecoder().decode(stderr));
-    assert(await exists(join(dir, "dist/esm/mod.js")), "mod.js missing");
-    assert(await exists(join(dir, "dist/esm/util.js")), "the import-map-aliased util.js missing");
-    assert(await exists(join(dir, "dist/esm/sub/helper.js")), "the folder-prefix-aliased helper.js missing");
-  } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
-});
-
 Deno.test("integration — build({ root }) builds a project in-process from elsewhere", async () => {
   const dir = await Deno.makeTempDir({ prefix: "dtn-root-" });
   try {
@@ -569,41 +500,6 @@ Deno.test("integration — build({ root }) inherits the target project's compile
       BuildError,
     );
     assertEquals(e.code, "TRANSPILE_FAILED");
-  } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
-});
-
-Deno.test("integration — CLI --deno-json outside cwd builds the config's project", async () => {
-  const cli = fromFileUrl(new URL("../cli.ts", import.meta.url));
-  const dir = await Deno.makeTempDir({ prefix: "dtn-cli-" });
-  try {
-    await Deno.mkdir(join(dir, "proj/src"), { recursive: true });
-    await Deno.mkdir(join(dir, "work"), { recursive: true });
-    await Deno.writeTextFile(
-      join(dir, "proj/deno.json"),
-      JSON.stringify({
-        name: "@fx/away",
-        version: "1.0.0",
-        exports: "./src/mod.ts",
-        imports: { "$util": "./src/util.ts" },
-      }),
-    );
-    await Deno.writeTextFile(join(dir, "proj/src/util.ts"), "export const u: number = 1;\n");
-    await Deno.writeTextFile(
-      join(dir, "proj/src/mod.ts"),
-      `import { u } from "$util";\nexport const v: number = u + 1;\n`,
-    );
-    const { code, stderr } = await new Deno.Command("deno", {
-      args: ["run", "-A", "--config", CONFIG, cli, "--deno-json", "../proj/deno.json", "--out-dir", "dist"],
-      cwd: join(dir, "work"),
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assertEquals(code, 0, new TextDecoder().decode(stderr));
-    // outDir keeps its cwd-relative CLI meaning even when the project root is elsewhere.
-    assert(await exists(join(dir, "work/dist/esm/mod.js")), "mod.js missing");
-    assert(await exists(join(dir, "work/dist/esm/util.js")), "util.js missing");
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }

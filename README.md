@@ -42,16 +42,6 @@ await build({
 //     └── ...     other local files related to mod.js
 ```
 
-## CLI
-
-dtn ships a CLI that reads `./deno.json` and takes the rest as flags (`--help` lists every flag):
-
-```sh
-deno run -A jsr:@nktkas/dtn/cli --out-dir dist --replace @valibot/valibot=valibot --copy README.md --copy LICENSE
-```
-
-The `packageJson` config field has no flag — use the [programmatic API](#usage) for it.
-
 ## Config
 
 ```ts
