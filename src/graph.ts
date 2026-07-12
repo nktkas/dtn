@@ -11,16 +11,29 @@ import { BuildError } from "./errors.ts";
 import { makeResolver } from "./spec.ts";
 import type { Plan } from "./intake.ts";
 
-/** A graph edge: the specifier as written, and what Deno resolves it to (after redirects). */
+/**
+ * A graph edge: the specifier as written, and what Deno resolves it to (after redirects).
+ *
+ * @see https://jsr.io/@deno/graph/doc/types/~/DependencyJson
+ * @see https://jsr.io/@deno/graph/doc/~/ModuleGraphJson
+ */
 export interface RawDependency {
   specifier: string;
   resolved: string | undefined;
 }
 
-/** A module's media type: the string values of `@deno/graph`'s `MediaType` enum, without its runtime object. */
+/**
+ * A module's media type: the string values of `@deno/graph`'s `MediaType` enum, without its runtime object.
+ *
+ * @see https://jsr.io/@deno/graph/doc/~/MediaType
+ */
 export type RawMediaType = `${MediaType}`;
 
-/** A graph module. `mediaType` is absent for npm and failed modules. */
+/**
+ * A graph module. `mediaType` is absent for npm and failed modules.
+ *
+ * @see https://jsr.io/@deno/graph/doc/~/ModuleJson
+ */
 export interface RawModule {
   specifier: string;
   mediaType: RawMediaType | undefined;
@@ -28,7 +41,12 @@ export interface RawModule {
   dependencies: RawDependency[];
 }
 
-/** The flattened module graph plus Deno-cache source access. */
+/**
+ * The flattened module graph plus Deno-cache source access.
+ *
+ * @see https://jsr.io/@deno/graph/doc/~/ModuleGraphJson
+ * @see https://jsr.io/@deno/cache-dir/doc/~/Loader
+ */
 export interface RawGraph {
   modules: RawModule[];
   /**
@@ -57,6 +75,9 @@ export interface RawGraph {
  * await graph.readSource("https://jsr.io/@std/encoding/1.0.0/hex.ts");
  * // -> the module's source bytes
  * ```
+ *
+ * @see https://jsr.io/@deno/graph/doc/~/createGraph
+ * @see https://jsr.io/@deno/cache-dir/doc/~/createCache
  */
 export async function loadGraph(plan: Plan): Promise<RawGraph> {
   const resolveSpecifier = makeResolver(plan.imports);

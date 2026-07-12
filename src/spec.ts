@@ -14,7 +14,13 @@ import { dirname, relative } from "@std/path";
 const REGISTRY_SPECIFIER = /^(npm|jsr):\/?(@[^/]+\/[^@/]+|[^@/]+)(?:@([^/]+))?(\/.*)?$/;
 const JSR_URL = /^https:\/\/jsr\.io\/(@[^/]+\/[^/]+)\//;
 
-/** A parsed `npm:`/`jsr:` specifier. */
+/**
+ * A parsed `npm:`/`jsr:` specifier.
+ *
+ * @see https://docs.deno.com/runtime/fundamentals/node/#using-npm-packages
+ * @see https://docs.deno.com/runtime/fundamentals/modules/
+ * @see https://jsr.io/docs/using-packages#importing-with-jsr-specifiers
+ */
 interface ParsedSpecifier {
   scheme: "npm" | "jsr";
   pkg: string;
@@ -34,13 +40,21 @@ interface ParsedSpecifier {
  * parseRegistry("node:fs");
  * // -> null  (not a package-registry scheme)
  * ```
+ *
+ * @see https://docs.deno.com/runtime/fundamentals/node/#using-npm-packages
+ * @see https://docs.deno.com/runtime/fundamentals/modules/
+ * @see https://jsr.io/docs/using-packages#importing-with-jsr-specifiers
  */
 export function parseRegistry(spec: string): ParsedSpecifier | null {
   const m = spec.match(REGISTRY_SPECIFIER);
   return m ? { scheme: m[1] as "npm" | "jsr", pkg: m[2], version: m[3], subpath: m[4] ?? "" } : null;
 }
 
-/** The jsr package (`@scope/name`) of a `https://jsr.io/...` module URL, or `null` for any other URL. */
+/**
+ * The jsr package (`@scope/name`) of a `https://jsr.io/...` module URL, or `null` for any other URL.
+ *
+ * @see https://jsr.io/docs/api#modules
+ */
 export function jsrUrlPackage(url: string): string | null {
   return url.match(JSR_URL)?.[1] ?? null;
 }
@@ -162,6 +176,9 @@ export function relSpecifier(fromFileRel: string, toFileRel: string): string {
  * resolve("@std/encoding/hex", "file:///repo/mod.ts");
  * // -> "jsr:@std/encoding@^1/hex"  (longest-prefix match, the remaining subpath appended)
  * ```
+ *
+ * @see https://html.spec.whatwg.org/multipage/webappapis.html#import-maps
+ * @see https://docs.deno.com/runtime/fundamentals/modules/
  */
 export function makeResolver(imports: Record<string, string>): (specifier: string, referrer: string) => string {
   // Deno's deno.json imports extend import maps by treating package aliases without a trailing slash as prefixes.

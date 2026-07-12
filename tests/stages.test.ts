@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-import-prefix
 
 /**
- * Stage-level tests for `rewriteStage`: what the second rewrite pass may and may not touch in vendor-emitted files.
+ * Stage-level tests for vendoring and final Node-specifier rewriting.
  *
  * @module
  */
@@ -70,7 +70,6 @@ Deno.test("rewriteStage — a vendor-emitted bare package ending in .ts is not c
     await write(join(p.codeDir, remoteRel), `import value from "foo.ts";\nexport default value;\n`);
     await rewriteStage(a);
 
-    // The local emit resolves through the index; the vendored copy's bare package stays as the vendor pass wrote it.
     assertStringIncludes(await Deno.readTextFile(join(p.codeDir, "mod.js")), `import "./${remoteRel}"`);
     assertStringIncludes(await Deno.readTextFile(join(p.codeDir, remoteRel)), `from "foo.ts"`);
   } finally {

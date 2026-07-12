@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-import-prefix
 
 /**
- * Unit tests for `planPackageJson`, fed by the real `analyze` so every path derives from the engine's own srcRoot.
+ * Unit tests for package metadata derived from analyzed build plans.
  *
  * @module
  */
@@ -114,7 +114,7 @@ Deno.test("planPackageJson", async (t) => {
   });
 
   await t.step(
-    "srcRoot accounts for a non-entry local dep above the entry dir (real analyze, not exports-only)",
+    "entry output remains nested when a reachable dependency is above the entry directory",
     () => {
       const p = plan({ ".": "./src/deep/mod.ts" });
       const a = analyze(
@@ -129,7 +129,7 @@ Deno.test("planPackageJson", async (t) => {
     },
   );
 
-  await t.step("a `.ts` segment before the final extension survives (the types regex is end-anchored)", () => {
+  await t.step("a `.ts` segment before the final extension survives in runtime and declaration paths", () => {
     const pkg = planPackageJson(analysis(plan({ ".": "./src/v1.ts.bak/mod.ts", "./other": "./src/other.ts" })));
     assertEquals((pkg.exports as Record<string, unknown>)["."], {
       types: "./esm/v1.ts.bak/mod.d.ts",

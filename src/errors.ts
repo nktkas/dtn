@@ -25,8 +25,11 @@ export type BuildErrorCode =
  * ```
  */
 export class BuildError extends Error {
+  /** Stable class name for error identification and logging. */
   override readonly name = "BuildError";
+  /** Machine-readable failure category. */
   readonly code: BuildErrorCode;
+  /** Additional context identifying the offending input when one is known. */
   readonly subject?: string;
 
   /**

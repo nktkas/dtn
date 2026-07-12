@@ -164,8 +164,10 @@ Deno.test("integration — local JavaScript, MJS, and declaration dependencies a
       "src/native.mjs": `export const native = 2;\n`,
       "src/types.d.ts": `export interface Config { answer: number }\n`,
       "src/util.ts": `export const helper = 1;\n`,
-      "src/mod.ts":
-        `import { helper } from "./legacy.js";\nimport { native } from "./native.mjs";\nimport type { Config } from "./types.d.ts";\nexport const value: Config = { answer: helper + native };\n`,
+      "src/mod.ts": `import { helper } from "./legacy.js";\n` +
+        `import { native } from "./native.mjs";\n` +
+        `import type { Config } from "./types.d.ts";\n` +
+        `export const value: Config = { answer: helper + native };\n`,
     },
     { outDir: "dist" },
     async ({ dir, error }) => {
@@ -234,7 +236,11 @@ Deno.test({
         await t.step("TypeScript resolves both declaration exports with NodeNext", async () => {
           await checkNodeNext(
             consumer,
-            `import { root } from "@fx/consumer";\nimport { sub } from "@fx/consumer/sub";\nconst exact: 1 = root;\nconst text: string = sub(exact);\nvoid text;\n`,
+            `import { root } from "@fx/consumer";\n` +
+              `import { sub } from "@fx/consumer/sub";\n` +
+              `const exact: 1 = root;\n` +
+              `const text: string = sub(exact);\n` +
+              `void text;\n`,
           );
         });
       },
@@ -295,7 +301,7 @@ Deno.test({
   },
 });
 
-Deno.test("integration — removed config features fail before replacing prior output", async (t) => {
+Deno.test("integration — unsupported config features fail before replacing prior output", async (t) => {
   for (
     const [name, denoJson] of [
       ["declaration-only export", { name: "@fx/bad", version: "1.0.0", exports: "./src/types.d.ts" }],
@@ -324,7 +330,7 @@ Deno.test("integration — removed config features fail before replacing prior o
   }
 });
 
-Deno.test("integration — removed module media and arbitrary remote origins fail loudly", async (t) => {
+Deno.test("integration — unsupported module media and arbitrary remote origins fail loudly", async (t) => {
   await t.step("local JSON is unsupported", async () => {
     await withBuild(
       {
@@ -398,8 +404,9 @@ Deno.test({
           exports: "./src/mod.ts",
           imports: { hex: "jsr:@std/encoding@1.0.10/hex", chalk: "npm:chalk@^5" },
         }),
-        "src/mod.ts":
-          `import { encodeHex } from "hex";\nimport chalk from "chalk";\nexport const value = chalk.green(encodeHex(new Uint8Array([1])));\n`,
+        "src/mod.ts": `import { encodeHex } from "hex";\n` +
+          `import chalk from "chalk";\n` +
+          `export const value = chalk.green(encodeHex(new Uint8Array([1])));\n`,
       },
       { outDir: "dist" },
       async ({ dir, error }) => {
