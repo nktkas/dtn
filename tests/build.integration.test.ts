@@ -160,7 +160,7 @@ Deno.test("integration — local JavaScript, MJS, and declaration dependencies a
   await withBuild(
     {
       "deno.json": JSON.stringify({ name: "@fx/copies", version: "1.0.0", exports: "./src/mod.ts" }),
-      "src/legacy.js": `export { helper } from "./util.ts";\n`,
+      "src/legacy.js": `export { helper } from "./util.ts";\n//# sourceMappingURL=legacy.js.map\n`,
       "src/native.mjs": `export const native = 2;\n`,
       "src/types.d.ts": `export interface Config { answer: number }\n`,
       "src/util.ts": `export const helper = 1;\n`,
@@ -170,7 +170,9 @@ Deno.test("integration — local JavaScript, MJS, and declaration dependencies a
     { outDir: "dist" },
     async ({ dir, error }) => {
       assertEquals(error, null, error?.message);
-      assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/legacy.js")), `from "./util.js"`);
+      const legacy = await Deno.readTextFile(join(dir, "dist/esm/legacy.js"));
+      assertStringIncludes(legacy, `from "./util.js"`);
+      assertEquals(legacy.includes("sourceMappingURL"), false);
       assert(await exists(join(dir, "dist/esm/native.mjs")));
       assert(await exists(join(dir, "dist/esm/types.d.ts")));
     },

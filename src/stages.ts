@@ -150,7 +150,7 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
  * @throws {BuildError} `EMIT_FAILED` when an emitted module or source map cannot be rewritten.
  */
 export async function rewriteStage(analysis: Analysis): Promise<void> {
-  const { plan, specifiers, vendoredCode, vendoredCopies, sourceByOutput } = analysis;
+  const { plan, specifiers, localCopies, srcRoot, vendoredCode, vendoredCopies, sourceByOutput } = analysis;
 
   // vendorStage already finalized these files' non-relative specifiers.
   // Re-resolving them could let a same-named import-map alias capture the output; only the deferred `.ts` → `.js` flip remains.
@@ -159,6 +159,10 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
     vendorEmitted.add(emit);
     vendorEmitted.add(emit.replace(/\.js$/, ".d.ts"));
   }
+  const copiedModules = new Set([
+    ...vendoredCopies.values(),
+    ...localCopies.map((file) => toPosix(relative(srcRoot, file))),
+  ]);
 
   for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".ts"])) {
     const fromRel = toPosix(relative(plan.codeDir, path));
@@ -172,6 +176,7 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
       vendorEmitted.has(fromRel)
         ? (spec) => isRelative(spec) ? relativeToNode(spec) : spec
         : (spec) => referrer === undefined ? spec : rewriteForNode(spec, referrer, fromRel, specifiers),
+      !isDts && copiedModules.has(fromRel),
     );
 
     let code = rewritten.code;

@@ -53,6 +53,13 @@ Deno.test("rewriteSpecifiers — static syntax only", async (t) => {
     assertEquals(rewriteSpecifiers(source, "mod.js", (specifier) => specifier), { code: source, edits: [] });
   });
 
+  await t.step("preserves line terminators when removing a block source-map directive", () => {
+    const source = `function value() { return /*# sourceMappingURL=mod.js.map\n*/ { answer: 42 }; }`;
+    const result = rewriteSpecifiers(source, "mod.js", (specifier) => specifier, true);
+    assertEquals(result.code.indexOf("\n"), source.indexOf("\n"));
+    assertEquals(result.code.includes("sourceMappingURL"), false);
+  });
+
   await t.step("fails when parsing yields no usable module", () => {
     const error = assertThrows(() => rewriteSpecifiers(`import x from ;`, "mod.js", (s) => s), BuildError);
     assertEquals(error.code, "EMIT_FAILED");

@@ -155,8 +155,8 @@ Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are st
     const mjs = "https://jsr.io/@scope/pkg/1/util.mjs";
     const dts = "https://jsr.io/@scope/pkg/1/types.d.ts";
     const sources = new Map([
-      [js, `export { value } from "./util.mjs";\n`],
-      [mjs, `export const value = 1;\n`],
+      [js, `export { value } from "./util.mjs";\n//# sourceMappingURL=mod.js.map\n`],
+      [mjs, `export const value = 1;\n/*@ sourceMappingURL=util.mjs.map */\n`],
       [dts, `export interface Config { value: number }\n`],
     ]);
     const g: RawGraph = {
@@ -186,7 +186,8 @@ Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are st
     const shipped = await Deno.readTextFile(join(p.codeDir, jsRel));
     assertStringIncludes(shipped, `from "${relSpecifier(jsRel, mjsRel)}"`);
     assertEquals(shipped.includes("@ts-nocheck"), false);
-    assertEquals(await Deno.readTextFile(join(p.codeDir, mjsRel)), sources.get(mjs));
+    assertEquals(shipped.includes("sourceMappingURL"), false);
+    assertEquals((await Deno.readTextFile(join(p.codeDir, mjsRel))).includes("sourceMappingURL"), false);
     assertEquals(await Deno.readTextFile(join(p.codeDir, dtsRel)), sources.get(dts));
     assertStringIncludes(await Deno.readTextFile(join(p.tmpDir, jsRel)), "@ts-nocheck");
   } finally {

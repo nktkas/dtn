@@ -9,6 +9,8 @@ import { type Node, type ParseResult, parseSync } from "oxc-parser";
 import { walk } from "oxc-walker";
 import { BuildError } from "./errors.ts";
 
+const SOURCE_MAP_DIRECTIVE = /^[@#]\s*sourceMappingURL=(\S*?)\s*$/;
+
 // =============================================================================
 // Specifier rewriting
 // =============================================================================
@@ -64,24 +66,37 @@ function specifierSpans(program: ParseResult["program"]): SpecifierSpan[] {
 /**
  * Rewrites every static module specifier using its decoded literal value.
  *
+ * @param stripSourceMapDirectives Remove source map links when their external artifacts are intentionally not shipped.
+ *
  * @throws {BuildError} `EMIT_FAILED` when parsing produces no usable syntax tree.
  */
 export function rewriteSpecifiers(
   code: string,
   filename: string,
   rewrite: (specifier: string) => string,
+  stripSourceMapDirectives = false,
 ): RewriteResult {
-  const { program, errors } = parseSync(filename, code, { lang: dialect(filename) });
+  const { program, errors, comments } = parseSync(filename, code, { lang: dialect(filename) });
   if (errors.length > 0 && program.body.length === 0) {
     throw new BuildError("EMIT_FAILED", `cannot parse module: ${errors[0].message}`, { subject: filename });
   }
 
   const edits: TextEdit[] = [];
+  if (stripSourceMapDirectives) {
+    for (const comment of comments) {
+      if (!SOURCE_MAP_DIRECTIVE.test(comment.value)) continue;
+      const replacement = comment.type === "Block"
+        ? code.slice(comment.start, comment.end).replace(/[^\r\n\u2028\u2029]/g, " ")
+        : "";
+      edits.push({ start: comment.start, end: comment.end, replacement });
+    }
+  }
   for (const span of specifierSpans(program).sort((a, b) => a.start - b.start)) {
     const rewritten = rewrite(span.value);
     if (rewritten === span.value) continue;
     edits.push({ start: span.start, end: span.end, replacement: JSON.stringify(rewritten) });
   }
+  edits.sort((a, b) => a.start - b.start);
 
   let out = "";
   let last = 0;
