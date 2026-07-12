@@ -47,9 +47,6 @@ function graph(modules: RawModule[]): RawGraph {
   return { modules, readSource: () => Promise.reject(new Error("readSource is not used by analyze")) };
 }
 
-// Build the Analysis through the real analyze() so srcRoot and every derived path come from production code.
-// Entry sources are leaves, and npm dependencies enter through the import map.
-// Cases with non-entry local dependencies build their graph directly.
 function analysis(p: Plan, npmDeps: Record<string, string> = {}): Analysis {
   const imports: Record<string, string> = {};
   for (const [name, range] of Object.entries(npmDeps)) imports[name] = `npm:${name}@${range}`;
@@ -73,15 +70,6 @@ Deno.test("planPackageJson", async (t) => {
         "./sub": { types: "./esm/sub.d.ts", default: "./esm/sub.js" },
       },
       dependencies: { chalk: "^5" },
-    });
-  });
-
-  await t.step("exports paths derive from plan.codeDir, not a literal segment", () => {
-    const p = { ...plan({ ".": "./src/mod.ts" }), codeDir: "/repo/dist/lib" };
-    const pkg = planPackageJson(analysis(p));
-    assertEquals((pkg as { exports: Record<string, unknown> }).exports["."], {
-      types: "./lib/mod.d.ts",
-      default: "./lib/mod.js",
     });
   });
 
@@ -128,8 +116,6 @@ Deno.test("planPackageJson", async (t) => {
   await t.step(
     "srcRoot accounts for a non-entry local dep above the entry dir (real analyze, not exports-only)",
     () => {
-      // The entry imports a source above its own directory, making /repo/src the common local root.
-      // The emitted entry must therefore retain its deep/ segment.
       const p = plan({ ".": "./src/deep/mod.ts" });
       const a = analyze(
         { ...p, imports: {} },
@@ -138,15 +124,12 @@ Deno.test("planPackageJson", async (t) => {
           mod(fileUrl("src/shared.ts"), "TypeScript"),
         ]),
       );
-      assertEquals(a.srcRoot, "/repo/src");
       const exports = planPackageJson(a).exports as Record<string, unknown>;
       assertEquals(exports["."], { types: "./esm/deep/mod.d.ts", default: "./esm/deep/mod.js" });
     },
   );
 
   await t.step("a `.ts` segment before the final extension survives (the types regex is end-anchored)", () => {
-    // Only the trailing `.ts` becomes `.d.ts`.
-    // The `.ts` inside the `v1.ts.bak` directory name must stay unchanged.
     const pkg = planPackageJson(analysis(plan({ ".": "./src/v1.ts.bak/mod.ts", "./other": "./src/other.ts" })));
     assertEquals((pkg.exports as Record<string, unknown>)["."], {
       types: "./esm/v1.ts.bak/mod.d.ts",

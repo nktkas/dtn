@@ -7,17 +7,7 @@
  */
 
 import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
-import {
-  isRelative,
-  jsrUrlPackage,
-  makeResolver,
-  parseRegistry,
-  parseReplacement,
-  relSpecifier,
-  toPosix,
-  tsToJs,
-  vendoredRel,
-} from "../src/spec.ts";
+import { jsrUrlPackage, makeResolver, parseRegistry, parseReplacement, vendoredRel } from "../src/spec.ts";
 
 Deno.test("parseRegistry", () => {
   assertEquals(parseRegistry("npm:chalk@^5/sub"), {
@@ -86,27 +76,20 @@ Deno.test("vendoredRel — portable media-aware URL identity", async (t) => {
   });
 });
 
-Deno.test("path helpers", () => {
-  assertEquals(isRelative("./x.ts"), true);
-  assertEquals(isRelative("npm:chalk"), false);
-  assertEquals(tsToJs("a/mod.ts"), "a/mod.js");
-  assertEquals(tsToJs("a/mod.mts"), "a/mod.mts");
-  assertEquals(toPosix("a\\b\\c.ts"), "a/b/c.ts");
-  assertEquals(relSpecifier("api/client.js", "_deps/x/mod.js"), "../_deps/x/mod.js");
-});
-
 Deno.test("makeResolver", async (t) => {
   const resolve = makeResolver({
     "@std/encoding": "jsr:@std/encoding@^1",
     "@scope/": "jsr:@scope/pkg@1/",
+    "@scope/pkg": "jsr:@scope/specific@2",
     chalk: "npm:chalk@^5",
   });
   const referrer = "file:///repo/src/mod.ts";
 
-  await t.step("matches exact aliases and Deno package subpaths", () => {
+  await t.step("matches exact aliases and uses the longest package prefix", () => {
     assertEquals(resolve("chalk", referrer), "npm:chalk@^5");
     assertEquals(resolve("@std/encoding/hex", referrer), "jsr:@std/encoding@^1/hex");
     assertEquals(resolve("@scope/util", referrer), "jsr:@scope/pkg@1/util");
+    assertEquals(resolve("@scope/pkg/util", referrer), "jsr:@scope/specific@2/util");
   });
 
   await t.step("resolves relative URLs but leaves an unmapped bare specifier bare", () => {

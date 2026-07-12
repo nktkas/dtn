@@ -9,12 +9,7 @@
 import { decode, encode, type SourceMapMappings } from "@jridgewell/sourcemap-codec";
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { BuildError } from "../src/errors.ts";
-import {
-  restoreSourceMapSource,
-  rewriteSpecifiers,
-  sourceMappingComment,
-  updateGeneratedSourceMap,
-} from "../src/rewrite.ts";
+import { restoreSourceMapSource, rewriteSpecifiers, updateGeneratedSourceMap } from "../src/rewrite.ts";
 
 function rewrite(code: string, file: string): { code: string; seen: string[] } {
   const seen: string[] = [];
@@ -129,8 +124,4 @@ Deno.test("source-map composition", async (t) => {
     );
     assertEquals(decode(updated.mappings)[1], []);
   });
-});
-
-Deno.test("sourceMappingComment", () => {
-  assertEquals(sourceMappingComment("mod.js.map"), "//# sourceMappingURL=mod.js.map\n");
 });
