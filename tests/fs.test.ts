@@ -20,9 +20,9 @@ Deno.test("moveEmitted", async (t) => {
       assertEquals(await Deno.readTextFile(join(dir, "deep/nested/a.js")), "x");
     });
 
-    await t.step("a missing artifact is a broken emission contract: TRANSPILE_FAILED", async () => {
+    await t.step("a missing artifact is a broken emission contract: EMIT_FAILED", async () => {
       const e = await assertRejects(() => fs.moveEmitted(join(dir, "missing.js"), join(dir, "out.js")), BuildError);
-      assertEquals(e.code, "TRANSPILE_FAILED");
+      assertEquals(e.code, "EMIT_FAILED");
       assertEquals(e.subject, join(dir, "missing.js"));
     });
   } finally {

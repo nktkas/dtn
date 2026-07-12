@@ -10,7 +10,7 @@ import { dirname, relative } from "@std/path";
 // Registry specifiers
 // =============================================================================
 
-/** Matches a registry specifier `scheme:[/]name[@version][/subpath]`; the name group accepts an unscoped name or `@scope/name`. */
+/** Matches `scheme:[/]name[@version][/subpath]`. The package name may be unscoped or use `@scope/name`. */
 const REGISTRY_SPECIFIER = /^(npm|jsr):\/?(@[^/]+\/[^@/]+|[^@/]+)(?:@([^/]+))?(\/.*)?$/;
 const JSR_URL = /^https:\/\/jsr\.io\/(@[^/]+\/[^/]+)\//;
 
@@ -23,7 +23,7 @@ interface ParsedSpecifier {
 }
 
 /**
- * Parses an `npm:`/`jsr:` specifier `scheme:[/]name[@version][/subpath]`, or `null` when `spec` is neither.
+ * Parses an `npm:`/`jsr:` specifier `scheme:[/]name[@version][/subpath]`, or returns `null` when `spec` is neither.
  *
  * @example
  * ```ts
@@ -56,9 +56,9 @@ export function jsrUrlPackage(url: string): string | null {
  * // -> { name: "@scope/pkg", version: undefined }
  * ```
  */
-export function parseReplacement(value: string): { name: string; version?: string } {
-  const m = value.match(/^(@?[^@]+)(?:@(.+))?$/)!;
-  return { name: m[1], version: m[2] };
+export function parseReplacement(value: string): { name: string; version?: string } | null {
+  const m = value.match(/^(@[^/@]+\/[^/@]+|[^/@]+)(?:@(.+))?$/);
+  return m === null ? null : { name: m[1], version: m[2] };
 }
 
 // =============================================================================
@@ -71,17 +71,51 @@ export function isRelative(spec: string): boolean {
 }
 
 /**
- * The package-relative path of a vendored module under {@linkcode depsDir}, mirroring its remote URL.
+ * The portable package-relative source path of one vendored URL and media type.
  *
  * @example
  * ```ts
- * vendoredRel("https://jsr.io/@std/encoding/1.0.0/hex.ts", "_deps");
- * // -> "_deps/jsr.io/@std/encoding/1.0.0/hex.ts"  (a URL query string, if any, is dropped)
+ * vendoredRel("https://jsr.io/@std/encoding/1.0.0/hex.ts", "_deps", "TypeScript");
+ * // -> "_deps/h-jsr~2eio/p-~40std/p-encoding/p-1~2e0~2e0/p-hex~2ets/mod.ts"
  * ```
  */
-export function vendoredRel(url: string, depsDir: string): string {
+export function vendoredRel(
+  url: string,
+  depsDir: string,
+  media: "TypeScript" | "JavaScript" | "Mjs" | "Dts",
+): string {
   const u = new URL(url);
-  return `${depsDir}/${u.host}${u.pathname}`;
+  const segments = portableComponents("h", u.host);
+  for (const segment of u.pathname.slice(1).split("/")) segments.push(...portableComponents("p", segment));
+  if (u.search !== "") segments.push(...portableComponents("q", u.search.slice(1)));
+  if (u.hash !== "") segments.push(...portableComponents("f", u.hash.slice(1)));
+
+  const extension = media === "TypeScript" ? ".ts" : media === "Mjs" ? ".mjs" : media === "Dts" ? ".d.ts" : ".js";
+  return `${depsDir}/${segments.join("/")}/mod${extension}`;
+}
+
+/** Splits one encoded URL component below common filesystem component limits without losing segment boundaries. */
+function portableComponents(prefix: "h" | "p" | "q" | "f", value: string): string[] {
+  const encoded = portableSegment(value);
+  const components = [`${prefix}-${encoded.slice(0, 120)}`];
+  for (let offset = 120; offset < encoded.length; offset += 120) {
+    components.push(`c-${encoded.slice(offset, offset + 120)}`);
+  }
+  return components;
+}
+
+/** Encodes one URL segment using only lowercase, case-stable portable filename bytes. */
+function portableSegment(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  if (bytes.length === 0) return "~";
+
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i];
+    const safe = (byte >= 0x61 && byte <= 0x7a) || (byte >= 0x30 && byte <= 0x39) || byte === 0x2d || byte === 0x5f;
+    out += safe ? String.fromCharCode(byte) : `~${byte.toString(16).padStart(2, "0")}`;
+  }
+  return out;
 }
 
 /**
@@ -96,24 +130,6 @@ export function tsToJs(path: string): string {
 /** Rewrites OS path separators to POSIX, the form used for every specifier and `package.json` path. */
 export function toPosix(path: string): string {
   return path.replaceAll("\\", "/");
-}
-
-/**
- * The concrete export subpath for a file matched by a wildcard export: the file's `*` capture, substituted into the
- * subpath pattern.
- *
- * @example
- * ```ts
- * wildcardSubpath("./*", "./src/*.ts", "./src/a.ts");
- * // -> "./a"
- * wildcardSubpath("./*", "./src/*.ts", "./src/types.d.ts");
- * // -> "./types.d"  (`*.ts` captures `types.d`)
- * ```
- */
-export function wildcardSubpath(subpathPattern: string, sourcePattern: string, source: string): string {
-  const [prefix, suffix] = sourcePattern.split("*");
-  const capture = source.slice(prefix.length, source.length - suffix.length);
-  return subpathPattern.replace("*", capture);
 }
 
 /**
@@ -135,38 +151,31 @@ export function relSpecifier(fromFileRel: string, toFileRel: string): string {
 // =============================================================================
 
 /**
- * Deno import-map resolution: an exact alias, then the longest matching prefix, then plain URL resolution.
- *
- * A relative import-map target (`"$u": "./util.ts"`) resolves against {@linkcode base} — the import map's own URL
- * (`deno.json`) — not the referrer, so the same alias resolves to the same file from anywhere in the project.
+ * Resolves a specifier using Deno import-map precedence:
+ * - An exact alias.
+ * - The longest matching prefix.
+ * - Plain URL resolution.
  *
  * @example
  * ```ts
- * const resolve = makeResolver(
- *   { "@std/encoding": "jsr:@std/encoding@^1", "$u": "./util.ts" },
- *   "file:///repo/deno.json",
- * );
+ * const resolve = makeResolver({ "@std/encoding": "jsr:@std/encoding@^1" });
  * resolve("@std/encoding/hex", "file:///repo/mod.ts");
  * // -> "jsr:@std/encoding@^1/hex"  (longest-prefix match, the remaining subpath appended)
- * resolve("$u", "file:///repo/src/mod.ts");
- * // -> "file:///repo/util.ts"  (relative target resolved against the deno.json base, not the referrer)
  * ```
  */
-export function makeResolver(
-  imports: Record<string, string>,
-  base: string,
-): (specifier: string, referrer: string) => string {
-  // Longest prefix first, so `@std/encoding/hex` wins over `@std/encoding`.
+export function makeResolver(imports: Record<string, string>): (specifier: string, referrer: string) => string {
+  // Deno's deno.json imports extend import maps by treating package aliases without a trailing slash as prefixes.
   const prefixes = Object.keys(imports).sort((a, b) => b.length - a.length);
-  const target = (value: string): string => isRelative(value) ? new URL(value, base).href : value;
   return (specifier, referrer) => {
     const exact = imports[specifier];
-    if (exact !== undefined) return target(exact);
+    if (exact !== undefined) return exact;
     for (const key of prefixes) {
-      const prefix = key.endsWith("/") ? key : `${key}/`;
-      // Slice at key.length, not prefix.length, so the alias's boundary `/` is kept in the rewritten specifier.
-      if (specifier.startsWith(prefix)) return target(imports[key] + specifier.slice(key.length));
+      const boundary = key.endsWith("/") ? key : `${key}/`;
+      if (specifier.startsWith(boundary)) return imports[key] + specifier.slice(key.length);
     }
-    return new URL(specifier, referrer).href;
+    if (isRelative(specifier) || specifier.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(specifier)) {
+      return new URL(specifier, referrer).href;
+    }
+    return specifier;
   };
 }

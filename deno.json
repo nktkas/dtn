@@ -8,6 +8,7 @@
     "@deno/graph": "jsr:@deno/graph@^0.108",
     "@std/fs": "jsr:@std/fs@^1",
     "@std/path": "jsr:@std/path@^1",
+    "@jridgewell/sourcemap-codec": "npm:@jridgewell/sourcemap-codec@1.5.5",
     "oxc-parser": "npm:oxc-parser@^0.134",
     "oxc-walker": "npm:oxc-walker@^1",
     "sort-package-json": "npm:sort-package-json@^4",

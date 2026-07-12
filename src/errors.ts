@@ -1,32 +1,26 @@
 /**
- * The error contract of the package: every failure is a {@linkcode BuildError} carrying a {@linkcode BuildErrorCode}.
+ * The package error contract: every failure is a {@linkcode BuildError} carrying a {@linkcode BuildErrorCode}.
  *
  * @module
  */
 
 /** Machine-readable cause of a build failure. */
 export type BuildErrorCode =
-  | "INVALID_EXPORTS"
-  | "REPLACEMENT_ALIAS_UNKNOWN"
-  | "REPLACEMENT_TARGET_INVALID"
-  | "REPLACEMENT_DIRECT_IMPORT"
-  | "UNSUPPORTED_LOCAL_SOURCE"
-  | "UNSUPPORTED_VENDORED_DEPENDENCY"
-  | "UNRESOLVED_SPECIFIER"
-  | "MODULE_LOAD_FAILED"
-  | "TRANSPILE_FAILED"
-  | "REWRITE_PARSE_FAILED";
+  | "INVALID_CONFIG"
+  | "UNSUPPORTED_MODULE"
+  | "DEPENDENCY_FAILED"
+  | "EMIT_FAILED"
+  | "BUILD_FAILED";
 
 /**
- * A build failure raised by the engine, with a machine-readable {@linkcode code} and, when known, a
- * {@linkcode subject} (the offending file path or specifier).
+ * A build failure with a stable machine-readable category and, when known, the offending file path or specifier.
  *
  * @example
  * ```ts ignore
  * try {
  *   await build(config);
  * } catch (e) {
- *   if (e instanceof BuildError && e.code === "REPLACEMENT_ALIAS_UNKNOWN") { ... }
+ *   if (e instanceof BuildError && e.code === "INVALID_CONFIG") { ... }
  * }
  * ```
  */
@@ -35,9 +29,16 @@ export class BuildError extends Error {
   readonly code: BuildErrorCode;
   readonly subject?: string;
 
-  constructor(code: BuildErrorCode, message: string, subject?: string) {
-    super(subject === undefined ? message : `${message} (${subject})`);
+  /**
+   * Creates one categorized build failure.
+   *
+   * @param code Stable failure category.
+   * @param message Human-readable failure description.
+   * @param options Optional offending subject and original failure.
+   */
+  constructor(code: BuildErrorCode, message: string, options: { subject?: string; cause?: unknown } = {}) {
+    super(options.subject === undefined ? message : `${message} (${options.subject})`, { cause: options.cause });
     this.code = code;
-    this.subject = subject;
+    this.subject = options.subject;
   }
 }

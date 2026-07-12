@@ -1,16 +1,14 @@
 /**
- * Reads the project's module graph and source files through `@deno/graph` and the Deno cache, flattened into plain
- * {@linkcode RawGraph} data.
+ * Reads the project through `@deno/graph` and the Deno cache, then flattens the result into plain {@linkcode RawGraph} data.
  *
  * @module
  */
 
 import { createGraph, type MediaType } from "@deno/graph";
 import { createCache } from "@deno/cache-dir";
-import { expandGlob } from "@std/fs";
-import { join, relative, resolve, toFileUrl } from "@std/path";
+import { resolve, toFileUrl } from "@std/path";
 import { BuildError } from "./errors.ts";
-import { makeResolver, toPosix, wildcardSubpath } from "./spec.ts";
+import { makeResolver } from "./spec.ts";
 import type { Plan } from "./intake.ts";
 
 /** A graph edge: the specifier as written, and what Deno resolves it to (after redirects). */
@@ -36,41 +34,13 @@ export interface RawGraph {
   /**
    * Reads a module's source bytes from the Deno cache.
    *
-   * @throws {BuildError} `MODULE_LOAD_FAILED` when the entry is not a loadable module (an unreadable, redirected, or
-   *   external entry).
+   * @throws {BuildError} `DEPENDENCY_FAILED` when the entry is not a loadable module.
    */
   readSource(specifier: string): Promise<Uint8Array>;
 }
 
 /**
- * Expands any `*` wildcard in `plan.exports` against the filesystem, replacing each wildcard entry with one concrete
- * `subpath → source` entry per matched file. Concrete entries pass through unchanged.
- *
- * @example
- * ```ts ignore
- * // plan.exports is { "./*": "./src/*.ts" }, with src/a.ts and src/b.ts on disk:
- * const expanded = await expandExports(plan);
- * // expanded.exports -> { "./a": "./src/a.ts", "./b": "./src/b.ts" }
- * ```
- */
-export async function expandExports(plan: Plan): Promise<Plan> {
-  const exports: Record<string, string> = {};
-  for (const [subpath, source] of Object.entries(plan.exports)) {
-    if (!source.includes("*")) {
-      exports[subpath] = source;
-      continue;
-    }
-    for await (const entry of expandGlob(source, { root: plan.repoRoot, includeDirs: false })) {
-      const rel = `./${toPosix(relative(plan.repoRoot, entry.path))}`;
-      exports[wildcardSubpath(subpath, source, rel)] = rel;
-    }
-  }
-  return { ...plan, exports };
-}
-
-/**
- * Builds the module graph from the plan's entry points using Deno's own resolver, then flattens it into plain
- * {@linkcode RawGraph} data.
+ * Builds the module graph from the plan's entry points using Deno's own resolver, then flattens it into plain {@linkcode RawGraph} data.
  *
  * @example
  * ```ts ignore
@@ -89,12 +59,8 @@ export async function expandExports(plan: Plan): Promise<Plan> {
  * ```
  */
 export async function loadGraph(plan: Plan): Promise<RawGraph> {
-  // A relative import-map target resolves against the import map's own URL — the project's `deno.json`.
-  const resolveSpecifier = makeResolver(plan.imports, toFileUrl(join(plan.repoRoot, "deno.json")).href);
+  const resolveSpecifier = makeResolver(plan.imports);
 
-  // HACK: `@deno/graph` mutates each LoadResponse it is handed (content becomes a plain number[] for wasm), and the
-  // cache memoizes remote responses by object, so a shared instance would replay the mutated content on a later load.
-  // The graph gets its own instance; module sources are read through a separate, fresh one.
   const graphCache = createCache();
   const roots = Object.values(plan.exports).map((source) => toFileUrl(resolve(plan.repoRoot, source)).href);
   const graph = await createGraph(roots, {
@@ -102,8 +68,8 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
     resolve: resolveSpecifier,
   });
 
-  // `@deno/graph` records redirects (a versionless or aliased URL → its resolved target) but does not apply them to
-  // dependency edges; follow each through the table transitively — a CLI-populated cache stores one entry per hop.
+  // `@deno/graph` records redirects but does not apply them to dependency edges,
+  // so follow the table transitively; a CLI-populated cache stores one entry per redirect hop.
   const follow = (specifier: string | undefined): string | undefined => {
     let current = specifier;
     while (current !== undefined && graph.redirects[current] !== undefined) current = graph.redirects[current];
@@ -119,11 +85,24 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
     })),
   }));
 
+  // HACK:
+  // @deno/graph mutates loader responses while flattening modules,
+  // so a fresh cache reader prevents those mutated plain arrays from reaching TextDecoder during the vendor stage.
   const sourceCache = createCache();
   const readSource = async (specifier: string): Promise<Uint8Array> => {
-    const loaded = await sourceCache.load(specifier);
+    let loaded;
+    try {
+      loaded = await sourceCache.load(specifier);
+    } catch (cause) {
+      throw new BuildError("DEPENDENCY_FAILED", "cannot read module source from the Deno cache", {
+        subject: specifier,
+        cause,
+      });
+    }
     if (loaded?.kind !== "module") {
-      throw new BuildError("MODULE_LOAD_FAILED", "cannot read module source from the Deno cache", specifier);
+      throw new BuildError("DEPENDENCY_FAILED", "cannot read module source from the Deno cache", {
+        subject: specifier,
+      });
     }
     return typeof loaded.content === "string" ? new TextEncoder().encode(loaded.content) : loaded.content;
   };

@@ -1,64 +1,60 @@
 /**
- * Rewrites the module specifiers in transpiled output to their Node form, plus the small fixups `deno transpile` needs.
- *
- * Specifiers are located by their span via `oxc-parser`.
+ * Locates static ESM specifiers, rewrites their literals, and keeps emitted source maps aligned with those edits.
  *
  * @module
  */
 
+import { decode, encode, type SourceMapMappings, type SourceMapSegment } from "@jridgewell/sourcemap-codec";
 import { type Node, type ParseResult, parseSync } from "oxc-parser";
 import { walk } from "oxc-walker";
 import { BuildError } from "./errors.ts";
 
 // =============================================================================
-// Specifier locator
+// Specifier rewriting
 // =============================================================================
 
-/**
- * The oxc parse dialect for a file.
- *
- * A `.d.ts`/`.d.mts`/`.d.cts` is parsed as a declaration (so `export type … from` and `import("…").T` type queries
- * are seen), plain `.js` output as JavaScript.
- */
+/** One replacement in UTF-16 offsets of the text before rewriting. */
+export interface TextEdit {
+  start: number;
+  end: number;
+  replacement: string;
+}
+
+/** Rewritten source and the edits needed to update its source map. */
+export interface RewriteResult {
+  code: string;
+  edits: TextEdit[];
+}
+
+/** The oxc parse dialect for one emitted module or declaration. */
 function dialect(filename: string): "dts" | "ts" | "js" {
   if (/\.d\.[cm]?ts$/.test(filename)) return "dts";
   if (/\.[cm]?ts$/.test(filename)) return "ts";
   return "js";
 }
 
-interface Span {
+interface SpecifierSpan {
   start: number;
-  end: number; // both quotes included
+  end: number;
+  value: string;
 }
 
-/** The spans (quotes included) of every module specifier in the parsed program. */
-function specifierSpans(program: ParseResult["program"]): Span[] {
-  const spans: Span[] = [];
+/** Locates static ESM and TypeScript import-type specifiers. */
+function specifierSpans(program: ParseResult["program"]): SpecifierSpan[] {
+  const spans: SpecifierSpan[] = [];
   walk(program, {
     enter(node): void {
-      // The string-literal node carrying this form's module specifier, if it has one.
       let source: Node | null | undefined;
       if (
-        node.type === "ImportDeclaration" || // import x from "..."
-        node.type === "ExportNamedDeclaration" || // export { y } from "..."
-        node.type === "ExportAllDeclaration" || // export * from "..."
-        node.type === "ImportExpression" || // import("...")
-        node.type === "TSImportType" // import("...").T  (.d.ts type query)
+        node.type === "ImportDeclaration" ||
+        node.type === "ExportNamedDeclaration" ||
+        node.type === "ExportAllDeclaration" ||
+        node.type === "TSImportType"
       ) {
         source = node.source;
       }
-      // `import.meta.resolve("…")` instead holds it as the first argument of the call.
-      if (
-        node.type === "CallExpression" &&
-        node.callee.type === "MemberExpression" && !node.callee.computed &&
-        node.callee.property.type === "Identifier" && node.callee.property.name === "resolve" &&
-        node.callee.object.type === "MetaProperty" && node.callee.object.meta.name === "import" &&
-        node.callee.object.property.name === "meta"
-      ) {
-        source = node.arguments[0];
-      }
       if (source?.type === "Literal" && typeof source.value === "string") {
-        spans.push({ start: source.start, end: source.end });
+        spans.push({ start: source.start, end: source.end, value: source.value });
       }
     },
   });
@@ -66,85 +62,193 @@ function specifierSpans(program: ParseResult["program"]): Span[] {
 }
 
 /**
- * Replaces every module specifier in {@linkcode code} with `rewrite(specifier)`.
+ * Rewrites every static module specifier using its decoded literal value.
  *
- * Only the quoted specifier text is spliced; everything else the transpiler emitted is left untouched.
- *
- * @param filename Selects the parse dialect (declaration / TypeScript / plain JS) and names the failure subject.
- *
- * @throws {BuildError} `REWRITE_PARSE_FAILED` when the parse collapses to an empty program.
- *
- * @example
- * ```ts
- * // The same `"./util.ts"` appears twice, but only the import specifier is spliced — a look-alike string literal is left as-is.
- * rewriteSpecifiers(`const p = "./util.ts";\nimport x from "./util.ts";`, "mod.js", (s) => s.replace(/\.ts$/, ".js"));
- * // -> `const p = "./util.ts";\nimport x from "./util.js";`
- * ```
+ * @throws {BuildError} `EMIT_FAILED` when parsing produces no usable syntax tree.
  */
-export function rewriteSpecifiers(code: string, filename: string, rewrite: (specifier: string) => string): string {
+export function rewriteSpecifiers(
+  code: string,
+  filename: string,
+  rewrite: (specifier: string) => string,
+): RewriteResult {
   const { program, errors } = parseSync(filename, code, { lang: dialect(filename) });
-  // oxc reports some errors with the AST intact (e.g. a CommonJS top-level return) — those files must still build.
-  // Only a parse collapsed to an empty program is fatal: it would ship every specifier silently unrewritten.
   if (errors.length > 0 && program.body.length === 0) {
-    throw new BuildError("REWRITE_PARSE_FAILED", `cannot parse module: ${errors[0].message}`, filename);
+    throw new BuildError("EMIT_FAILED", `cannot parse module: ${errors[0].message}`, { subject: filename });
   }
-  // Sort by start: the single-cursor splice below is correct only for ascending spans, and oxc does not contract a
-  // source-ordered traversal — so sort rather than depend on its current DFS happening to emit spans in order.
-  const spans = specifierSpans(program).sort((a, b) => a.start - b.start);
+
+  const edits: TextEdit[] = [];
+  for (const span of specifierSpans(program).sort((a, b) => a.start - b.start)) {
+    const rewritten = rewrite(span.value);
+    if (rewritten === span.value) continue;
+    edits.push({ start: span.start, end: span.end, replacement: JSON.stringify(rewritten) });
+  }
 
   let out = "";
   let last = 0;
-  // Span bounds include the quotes: keep them (slice to `start + 1`, resume at `end - 1`) and rewrite only the inner text.
-  for (const { start, end } of spans) {
-    out += code.slice(last, start + 1) + rewrite(code.slice(start + 1, end - 1));
-    last = end - 1;
+  for (const edit of edits) {
+    out += code.slice(last, edit.start) + edit.replacement;
+    last = edit.end;
   }
-  return out + code.slice(last);
+  return { code: out + code.slice(last), edits };
 }
 
 // =============================================================================
-// Transpile fixups
+// Source maps
 // =============================================================================
 
 /**
- * Restores the `with { type: "json" }` attribute on JSON from-imports, which `deno transpile` drops from declarations.
+ * Source Map Revision 3 fields used by the rewrite pass.
  *
- * Sources are located via the parser, so look-alikes inside comments or unrelated strings are never touched.
- *
- * @param filename Selects the parse dialect (declaration / TypeScript / plain JS).
+ * @see https://tc39.es/ecma426/
  */
-export function restoreJsonAttributes(code: string, filename: string): string {
-  const { program } = parseSync(filename, code, { lang: dialect(filename) });
-
-  const inserts: number[] = [];
-  walk(program, {
-    enter(node): void {
-      if (
-        node.type !== "ImportDeclaration" &&
-        node.type !== "ExportNamedDeclaration" &&
-        node.type !== "ExportAllDeclaration"
-      ) return;
-      const source = node.source;
-      if (
-        source?.type === "Literal" && typeof source.value === "string" && source.value.endsWith(".json") &&
-        node.attributes.length === 0
-      ) {
-        inserts.push(source.end);
-      }
-    },
-  });
-
-  // Same ordering caveat as in rewriteSpecifiers: sort, do not rely on the walker's traversal order.
-  let out = "";
-  let last = 0;
-  for (const at of inserts.sort((a, b) => a - b)) {
-    out += code.slice(last, at) + ` with { type: "json" }`;
-    last = at;
-  }
-  return out + code.slice(last);
+interface SourceMap {
+  version: 3;
+  file?: string;
+  sourceRoot?: string;
+  sources: string[];
+  sourcesContent?: Array<string | null>;
+  names: string[];
+  mappings: string;
 }
 
-/** The trailing `//# sourceMappingURL=…` comment `deno transpile` omits when emitting a separate source map. */
+/** Updates generated positions after edits to emitted JavaScript. */
+export function updateGeneratedSourceMap(
+  text: string,
+  before: string,
+  after: string,
+  edits: TextEdit[],
+  filename: string,
+): string {
+  try {
+    if (edits.length === 0) return text;
+    const map = parseSourceMap(text, filename);
+    const mappings = decode(map.mappings);
+    const beforeLines = lineStarts(before);
+    const afterLines = lineStarts(after);
+    const updated: SourceMapMappings = [];
+
+    for (let line = 0; line < mappings.length; line++) {
+      for (const segment of mappings[line]) {
+        const offset = beforeLines[line] + segment[0];
+        const position = offsetPosition(transformForward(offset, edits), afterLines);
+        segment[0] = position.column;
+        (updated[position.line] ??= []).push(segment);
+      }
+    }
+    map.mappings = encode(normalizeMappings(updated));
+    return JSON.stringify(map);
+  } catch (cause) {
+    if (cause instanceof BuildError) throw cause;
+    throw new BuildError("EMIT_FAILED", "cannot update emitted source map", { subject: filename, cause });
+  }
+}
+
+/** Rebinds a vendored map from its rewritten scratch source to the original remote source. */
+export function restoreSourceMapSource(
+  text: string,
+  rewrittenSource: string,
+  originalSource: string,
+  edits: TextEdit[],
+  sourceUrl: string,
+  filename: string,
+): string {
+  try {
+    const map = parseSourceMap(text, filename);
+    const mappings = decode(map.mappings);
+    if (edits.length > 0) {
+      const rewrittenLines = lineStarts(rewrittenSource);
+      const originalLines = lineStarts(originalSource);
+      for (const line of mappings) {
+        for (const segment of line) {
+          if (segment.length === 1 || segment[1] !== 0) continue;
+          const offset = rewrittenLines[segment[2]] + segment[3];
+          const position = offsetPosition(transformBackward(offset, edits), originalLines);
+          segment[2] = position.line;
+          segment[3] = position.column;
+        }
+      }
+      map.mappings = encode(mappings);
+    }
+    delete map.sourceRoot;
+    map.sources = [sourceUrl];
+    map.sourcesContent = [originalSource];
+    return JSON.stringify(map);
+  } catch (cause) {
+    if (cause instanceof BuildError) throw cause;
+    throw new BuildError("EMIT_FAILED", "cannot restore emitted source map provenance", { subject: filename, cause });
+  }
+}
+
+/** Parses the compiler-owned source map and normalizes malformed JSON into the package error contract. */
+function parseSourceMap(text: string, filename: string): SourceMap {
+  try {
+    return JSON.parse(text) as SourceMap;
+  } catch (cause) {
+    throw new BuildError("EMIT_FAILED", "cannot parse emitted source map", { subject: filename, cause });
+  }
+}
+
+/** UTF-16 offset of the first character on every line. */
+function lineStarts(text: string): number[] {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  return starts;
+}
+
+/** Converts an absolute UTF-16 offset to a zero-based line and column. */
+function offsetPosition(offset: number, starts: number[]): { line: number; column: number } {
+  let low = 0;
+  let high = starts.length;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (starts[middle] <= offset) low = middle;
+    else high = middle;
+  }
+  return { line: low, column: offset - starts[low] };
+}
+
+/** Maps an offset from pre-edit text into post-edit text. */
+function transformForward(offset: number, edits: TextEdit[]): number {
+  let delta = 0;
+  for (const edit of edits) {
+    if (offset < edit.start) break;
+    if (offset < edit.end) return edit.start + delta;
+    delta += edit.replacement.length - (edit.end - edit.start);
+  }
+  return offset + delta;
+}
+
+/** Maps an offset from post-edit text back into pre-edit text. */
+function transformBackward(offset: number, edits: TextEdit[]): number {
+  let delta = 0;
+  for (const edit of edits) {
+    const start = edit.start + delta;
+    const end = start + edit.replacement.length;
+    if (offset < start) break;
+    if (offset < end) return edit.start;
+    delta += edit.replacement.length - (edit.end - edit.start);
+  }
+  return offset - delta;
+}
+
+/** Sorts remapped segments and removes duplicate generated columns. */
+function normalizeMappings(mappings: SourceMapMappings): SourceMapMappings {
+  for (let index = 0; index < mappings.length; index++) {
+    const line = mappings[index] ?? (mappings[index] = []);
+    line.sort((a, b) => a[0] - b[0]);
+    let write = 0;
+    for (const segment of line) {
+      if (write > 0 && line[write - 1][0] === segment[0]) continue;
+      line[write++] = segment as SourceMapSegment;
+    }
+    line.length = write;
+  }
+  return mappings;
+}
+
+/** The trailing comment omitted by `deno transpile` for separate maps. */
 export function sourceMappingComment(mapName: string): string {
   return `//# sourceMappingURL=${mapName}\n`;
 }

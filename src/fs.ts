@@ -43,7 +43,7 @@ export function readText(path: string): Promise<string> {
 /**
  * Moves an emitted artifact into place, creating parent directories.
  *
- * @throws {BuildError} `TRANSPILE_FAILED` when the artifact was not emitted.
+ * @throws {BuildError} `EMIT_FAILED` when the artifact was not emitted.
  */
 export async function moveEmitted(from: string, to: string): Promise<void> {
   await ensureDir(dirname(to));
@@ -51,7 +51,7 @@ export async function moveEmitted(from: string, to: string): Promise<void> {
     await Deno.rename(from, to);
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) {
-      throw new BuildError("TRANSPILE_FAILED", "transpile did not emit expected artifact", from);
+      throw new BuildError("EMIT_FAILED", "transpile did not emit expected artifact", { subject: from, cause: e });
     }
     throw e;
   }
@@ -88,15 +88,14 @@ interface TranspileOptions {
   files: string[];
   outDir: string;
   cwd: string;
-  sourceMap: "inline" | "separate" | "none";
   /** `"none"` disables the subprocess's auto-discovery of `deno.json`/`deno.lock` from cwd ancestors. */
   config: "inherit" | "none";
 }
 
 /**
- * Runs `deno transpile`, emitting `.js`, source maps (inline, separate, or none), and type-checked `.d.ts` for `files`.
+ * Runs `deno transpile`, emitting `.js`, separate source maps, and type-checked `.d.ts` for `files`.
  *
- * @throws {BuildError} `TRANSPILE_FAILED` when the `deno transpile` subprocess exits non-zero (e.g. a type error).
+ * @throws {BuildError} `EMIT_FAILED` when the `deno transpile` subprocess exits non-zero.
  */
 export async function transpile(options: TranspileOptions): Promise<void> {
   try {
@@ -107,13 +106,13 @@ export async function transpile(options: TranspileOptions): Promise<void> {
       options.importMap,
       "--declaration",
       "--source-map",
-      options.sourceMap,
+      "separate",
       "--outdir",
       options.outDir,
       ...options.files,
     ], options.cwd);
   } catch (e) {
-    throw new BuildError("TRANSPILE_FAILED", e instanceof Error ? e.message : String(e));
+    throw new BuildError("EMIT_FAILED", e instanceof Error ? e.message : String(e), { cause: e });
   }
 }
 
