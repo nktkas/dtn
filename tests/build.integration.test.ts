@@ -98,8 +98,9 @@ async function checkNodeNext(consumer: string, source: string): Promise<void> {
 }
 
 Deno.test("integration — local project emits ESM, declarations, corrected maps, and package metadata", async (t) => {
-  const mod =
-    `import { helper } from "./util.ts";\nexport function greet(n: number): number {\n  return helper(n);\n}\n`;
+  const mod = `#!/usr/bin/env -S deno run\nimport { helper } from "./util.ts";\n` +
+    `export function greet(n: number): number {\n  return helper(n);\n}\n` +
+    'export type Marker = `before\n/// <amd-module name="file:///author/inside" />\nafter`;\n';
   await withBuild(
     {
       "deno.json": JSON.stringify({ name: "@fx/local", version: "1.0.0", exports: "./src/mod.ts" }),
@@ -119,7 +120,8 @@ Deno.test("integration — local project emits ESM, declarations, corrected maps
         assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.js")), `from "./util.js"`);
         const declaration = await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts"));
         assertStringIncludes(declaration, `export declare function greet(n: number): number;`);
-        assertEquals(declaration.includes(`/// <amd-module name="file:///`), false);
+        assertStringIncludes(declaration, `/// <amd-module name="file:///author/inside" />`);
+        assertEquals(declaration.includes(`/// <amd-module name="file://${dir}`), false);
       });
 
       await t.step("the separate map keeps original source provenance and is linked from JavaScript", async () => {

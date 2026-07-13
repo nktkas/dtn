@@ -165,6 +165,42 @@ Deno.test("vendorStage — a vendored map points back to the original JSR source
   }
 });
 
+Deno.test("vendorStage — generated transitive JavaScript declarations omit absolute AMD names", async () => {
+  const root = await Deno.makeTempDir({ prefix: "dtn-stages-" });
+  try {
+    const p = plan(root);
+    const local = toFileUrl(join(root, "src/mod.ts")).href;
+    const remoteTs = "https://example.com/mod.ts";
+    const remoteJs = "https://example.com/dep.js";
+    const sources = new Map([
+      [remoteTs, `import { dep } from "./dep.js";\nexport const value: number = dep;\n`],
+      [remoteJs, `export const dep = 41;\n`],
+    ]);
+    const g: RawGraph = {
+      modules: [
+        mod(local, "TypeScript", [dep(remoteTs, remoteTs)]),
+        mod(remoteTs, "TypeScript", [dep("./dep.js", remoteJs)]),
+        mod(remoteJs, "JavaScript"),
+      ],
+      readSource: (specifier) => {
+        const source = sources.get(specifier);
+        return source === undefined
+          ? Promise.reject(new Error(`unexpected source ${specifier}`))
+          : Promise.resolve(new TextEncoder().encode(source));
+      },
+    };
+    const analysis = analyze(p, g);
+    await vendorStage(analysis, g);
+
+    const jsRel = analysis.vendoredCopies.get(remoteJs)!;
+    const declaration = await Deno.readTextFile(join(p.codeDir, jsRel.replace(/\.js$/, ".d.ts")));
+    assertEquals(declaration.includes(`/// <amd-module name="file:///`), false);
+    assertStringIncludes(declaration, `export const dep: 41;`);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test({
   name: "vendorStage — npm subpaths preserve declaration types",
   ignore: !NETWORK,
@@ -205,20 +241,28 @@ Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are st
   try {
     const p = plan(root);
     const local = toFileUrl(join(root, "src/mod.ts")).href;
+    const ts = "https://jsr.io/@scope/pkg/1/entry.ts";
     const js = "https://jsr.io/@scope/pkg/1/mod.js";
     const mjs = "https://jsr.io/@scope/pkg/1/util.mjs";
     const dts = "https://jsr.io/@scope/pkg/1/types.d.ts";
     const sources = new Map([
+      [ts, `import type { Config } from "./types.d.ts";\nexport const config: Config = {};\n`],
       [js, `export { value } from "./util.mjs";\n//# sourceMappingURL=mod.js.map\n`],
       [mjs, `export const value = 1;\n/*@ sourceMappingURL=util.mjs.map */\n`],
-      [dts, `export type Config = import("file:///author/types.d.ts").Config;\n`],
+      [
+        dts,
+        `/// <amd-module name="file:///author/owned-name" />\n` +
+        `export type Config = import("file:///author/types.d.ts").Config;\n`,
+      ],
     ]);
     const g: RawGraph = {
       modules: [
         mod(local, "TypeScript", [
+          dep("jsr:@scope/pkg@1/entry", ts),
           dep("jsr:@scope/pkg@1", js),
           dep("jsr:@scope/pkg@1/types", dts),
         ]),
+        mod(ts, "TypeScript", [dep("./types.d.ts", dts)]),
         mod(js, "JavaScript", [dep("./util.mjs", mjs)]),
         mod(mjs, "Mjs"),
         mod(dts, "Dts"),

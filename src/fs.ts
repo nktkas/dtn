@@ -5,10 +5,14 @@
  */
 
 import { copy, ensureDir, exists, walk } from "@std/fs";
-import { dirname, join } from "@std/path";
+import { dirname } from "@std/path";
 import { BuildError } from "./errors.ts";
 
 export { exists };
+
+const DECLARATION_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts"];
+const GENERATED_AMD_DIRECTIVE =
+  /^(#![^\r\n\u2028\u2029]*(?:\r\n|[\n\r\u2028\u2029]))?\/\/\/ <amd-module name="file:\/\/\/[^"\r\n\u2028\u2029]+" \/>[ \t]*(?:\r\n|[\n\r\u2028\u2029]|$)/;
 
 // =============================================================================
 // File system
@@ -99,6 +103,15 @@ interface TranspileOptions {
  */
 export async function transpile(options: TranspileOptions): Promise<void> {
   try {
+    // The vendor output tree already contains copied declarations;
+    // only files created by this subprocess are compiler-owned.
+    const existingDeclarations = new Set<string>();
+    if (await exists(options.outDir)) {
+      for await (const path of walkFiles(options.outDir, DECLARATION_EXTENSIONS)) {
+        existingDeclarations.add(path);
+      }
+    }
+
     await run(Deno.execPath(), [
       "transpile",
       ...(options.config === "none" ? ["--no-config", "--no-lock"] : []),
@@ -114,13 +127,10 @@ export async function transpile(options: TranspileOptions): Promise<void> {
 
     // HACK:
     // Declaration emit assigns absolute file-URL AMD names to ESM modules, exposing the build path in package types.
-    for (const file of options.files) {
-      const path = join(options.outDir, file).replace(/\.ts$/, ".d.ts");
+    for await (const path of walkFiles(options.outDir, DECLARATION_EXTENSIONS)) {
+      if (existingDeclarations.has(path)) continue;
       const declaration = await readText(path);
-      await Deno.writeTextFile(
-        path,
-        declaration.replace(/^\/\/\/ <amd-module name="file:\/\/\/[^"\r\n]+" \/>\r?\n/, ""),
-      );
+      await Deno.writeTextFile(path, declaration.replace(GENERATED_AMD_DIRECTIVE, "$1"));
     }
   } catch (e) {
     throw new BuildError("EMIT_FAILED", e instanceof Error ? e.message : String(e), { cause: e });
