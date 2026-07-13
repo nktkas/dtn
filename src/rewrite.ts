@@ -216,7 +216,13 @@ function parseSourceMap(text: string, filename: string): SourceMap {
 function lineStarts(text: string): number[] {
   const starts = [0];
   for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+    const character = text[i];
+    if (character === "\r") {
+      if (text[i + 1] === "\n") i++;
+      starts.push(i + 1);
+      continue;
+    }
+    if (character === "\n" || character === "\u2028" || character === "\u2029") starts.push(i + 1);
   }
   return starts;
 }

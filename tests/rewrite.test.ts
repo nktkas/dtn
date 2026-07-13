@@ -120,6 +120,33 @@ Deno.test("source-map composition", async (t) => {
     assertEquals(decode(restored.mappings)[0][1][3], original.indexOf(";"));
   });
 
+  await t.step("recognizes every JavaScript line terminator while restoring vendored positions", () => {
+    for (const terminator of ["\r", "\r\n", "\u2028", "\u2029"]) {
+      const original = `export { x } from "jsr:@scope/x";${terminator}export const y = 1;`;
+      const rewritten = rewriteSpecifiers(original, "mod.ts", () => "./p-x/mod.ts");
+      const sourceColumn = 7;
+      const map = JSON.stringify({
+        version: 3,
+        file: "mod.js",
+        sources: ["file:///tmp/vendor/mod.ts"],
+        sourcesContent: [rewritten.code],
+        names: [],
+        mappings: encode([[[0, 0, 1, sourceColumn]]]),
+      });
+      const restored = JSON.parse(
+        restoreSourceMapSource(
+          map,
+          rewritten.code,
+          original,
+          rewritten.edits,
+          "https://jsr.io/@scope/pkg/1/mod.ts",
+          "mod.js.map",
+        ),
+      );
+      assertEquals(decode(restored.mappings)[0][0].slice(2), [1, sourceColumn], JSON.stringify(terminator));
+    }
+  });
+
   await t.step("preserves empty mapping lines", () => {
     const before = `import x from "./x.ts";\n\nexport const y = x;\n`;
     const rewritten = rewriteSpecifiers(before, "mod.js", () => "./longer.js");
