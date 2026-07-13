@@ -104,9 +104,9 @@ The intentionally supported scope is narrower than Deno's module system:
 - **Import-map `scopes` are unsupported; aliases may target only `jsr:` or `npm:` packages.**
 - **Remote modules are accepted only inside a JSR graph.**
 - **Local and vendored JSR modules are limited to TypeScript, JavaScript, MJS, and declaration files.**
-- **Only static ESM and TypeScript `import()` type specifiers are rewritten; runtime `import()`,
-  `import.meta.resolve()`, CommonJS, TypeScript `import = require`, module declarations/augmentations, triple-slash
-  references, and JavaScript JSDoc are not.**
+- **Only static ESM, string-literal runtime `import()`, and TypeScript `import()` type specifiers are rewritten;
+  computed runtime `import()`, `import.meta.resolve()`, CommonJS, TypeScript `import = require`, module
+  declarations/augmentations, triple-slash references, and JavaScript JSDoc are not.**
 - **Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.**
 - **Generated absolute `file:` imports fail; use explicit type annotations.**
 - **Deno runtime APIs are not shimmed for Node.**

@@ -156,6 +156,31 @@ Deno.test("integration — escaped and query-bearing local specifiers resolve th
   );
 });
 
+Deno.test("integration — string-literal runtime imports execute in Node", async () => {
+  await withBuild(
+    {
+      "deno.json": JSON.stringify({ name: "@fx/dynamic", version: "1.0.0", exports: "./src/mod.ts" }),
+      "src/feature.ts": `export const value = 42;\n`,
+      "src/mod.ts": `export async function load(): Promise<number> {\n` +
+        `  return (await import("./feature.ts")).value;\n` +
+        `}\n`,
+    },
+    { outDir: "dist" },
+    async ({ dir, error }) => {
+      assertEquals(error, null, error?.message);
+      assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.js")), `import("./feature.js")`);
+      assertEquals(
+        await runCommand(
+          "node",
+          ["--input-type=module", "--eval", `console.log(await (await import("./dist/esm/mod.js")).load())`],
+          dir,
+        ),
+        "42",
+      );
+    },
+  );
+});
+
 Deno.test("integration — local JavaScript, MJS, and declaration dependencies are copied", async () => {
   await withBuild(
     {

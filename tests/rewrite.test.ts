@@ -20,8 +20,8 @@ function rewrite(code: string, file: string): { code: string; seen: string[] } {
   return { code: result.code, seen };
 }
 
-Deno.test("rewriteSpecifiers — static syntax only", async (t) => {
-  await t.step("rewrites imports, re-exports, and declaration import types", () => {
+Deno.test("rewriteSpecifiers — supported syntax", async (t) => {
+  await t.step("rewrites imports, re-exports, runtime imports, and declaration import types", () => {
     const source = `import x from "./x.ts";\nexport { y } from "./y.ts";\nexport * from "./z.ts";\n`;
     assertEquals(rewrite(source, "mod.js"), {
       code:
@@ -32,10 +32,15 @@ Deno.test("rewriteSpecifiers — static syntax only", async (t) => {
       code: `export declare const x: import("./types.ts?rewritten").Foo;`,
       seen: ["./types.ts"],
     });
+    assertEquals(rewrite(`const x = import("./runtime.json", { with: { type: "json" } });`, "mod.js"), {
+      code: `const x = import("./runtime.json?rewritten", { with: { type: "json" } });`,
+      seen: ["./runtime.json"],
+    });
   });
 
-  await t.step("does not rewrite dynamic imports or import.meta.resolve", () => {
-    const source = `const a = import("./a.ts");\nconst b = import.meta.resolve("./b.ts");\n`;
+  await t.step("does not rewrite computed runtime imports or import.meta.resolve", () => {
+    const source = `const a = import("./features/" + name + ".ts");\n` +
+      `const b = import.meta.resolve("./b.ts");\n`;
     assertEquals(rewrite(source, "mod.js"), { code: source, seen: [] });
   });
 

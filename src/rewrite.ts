@@ -1,5 +1,5 @@
 /**
- * Locates static ESM specifiers, rewrites their literals, and keeps emitted source maps aligned with those edits.
+ * Locates supported module specifiers, rewrites their literals, and keeps emitted source maps aligned with those edits.
  *
  * @module
  */
@@ -41,7 +41,7 @@ interface SpecifierSpan {
   value: string;
 }
 
-/** Locates static ESM and TypeScript import-type specifiers. */
+/** Locates static ESM, string-literal runtime import, and TypeScript import-type specifiers. */
 function specifierSpans(program: ParseResult["program"]): SpecifierSpan[] {
   const spans: SpecifierSpan[] = [];
   walk(program, {
@@ -49,6 +49,7 @@ function specifierSpans(program: ParseResult["program"]): SpecifierSpan[] {
       let source: Node | null | undefined;
       if (
         node.type === "ImportDeclaration" ||
+        node.type === "ImportExpression" ||
         node.type === "ExportNamedDeclaration" ||
         node.type === "ExportAllDeclaration" ||
         node.type === "TSImportType"
@@ -64,7 +65,7 @@ function specifierSpans(program: ParseResult["program"]): SpecifierSpan[] {
 }
 
 /**
- * Rewrites every static module specifier using its decoded literal value.
+ * Rewrites every supported module specifier using its decoded literal value.
  *
  * @param stripSourceMapDirectives Remove source map links when their external artifacts are intentionally not shipped.
  *
