@@ -73,7 +73,7 @@ export interface Analysis {
  * Classifies every module reachable from the entry points.
  *
  * @throws {BuildError} `UNSUPPORTED_MODULE` for an unsupported local or remote medium.
- * @throws {BuildError} `DEPENDENCY_FAILED` when a module cannot be loaded or an edge cannot become package output.
+ * @throws {BuildError} `DEPENDENCY_FAILED` when loading/resolution fails or npm requirement strings differ for one package.
  */
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
   const npmDeps = new Map<string, string>();

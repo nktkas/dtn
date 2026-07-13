@@ -91,7 +91,7 @@ try {
 | -------------------- | ------------------------------------------------------------------------------ |
 | `INVALID_CONFIG`     | Exports, registry aliases, or npm replacements violate the supported contract. |
 | `UNSUPPORTED_MODULE` | A reachable module has an unsupported media type.                              |
-| `DEPENDENCY_FAILED`  | A dependency cannot be loaded or resolved to package output.                   |
+| `DEPENDENCY_FAILED`  | Loading/resolution fails or npm requirement strings differ for one package.    |
 | `EMIT_FAILED`        | Transpilation, expected artifacts, rewriting, or source maps fail.             |
 | `BUILD_FAILED`       | Another platform or library operation fails.                                   |
 
