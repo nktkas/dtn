@@ -67,7 +67,7 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  * @return A promise fulfilled after all package artifacts have been written.
  *
  * @throws {BuildError} `INVALID_CONFIG` when the supplied configuration violates the supported contract.
- * @throws {BuildError} `UNSUPPORTED_MODULE` when a reachable module has an unsupported origin or media type.
+ * @throws {BuildError} `UNSUPPORTED_MODULE` when a reachable module has an unsupported media type.
  * @throws {BuildError} `DEPENDENCY_FAILED` when a dependency cannot be loaded or resolved to package output.
  * @throws {BuildError} `EMIT_FAILED` when transpilation or output rewriting fails.
  * @throws {BuildError} `BUILD_FAILED` when another platform or library operation fails.

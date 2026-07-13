@@ -90,7 +90,7 @@ try {
 | `code`               | Raised when                                                                    |
 | -------------------- | ------------------------------------------------------------------------------ |
 | `INVALID_CONFIG`     | Exports, registry aliases, or npm replacements violate the supported contract. |
-| `UNSUPPORTED_MODULE` | A module has an unsupported origin or media type.                              |
+| `UNSUPPORTED_MODULE` | A reachable module has an unsupported media type.                              |
 | `DEPENDENCY_FAILED`  | A dependency cannot be loaded or resolved to package output.                   |
 | `EMIT_FAILED`        | Transpilation, expected artifacts, rewriting, or source maps fail.             |
 | `BUILD_FAILED`       | Another platform or library operation fails.                                   |
@@ -102,8 +102,8 @@ The original platform or library error is available through `error.cause` when o
 The intentionally supported scope is narrower than Deno's module system:
 
 - **Import-map `scopes` are unsupported; aliases may target only `jsr:` or `npm:` packages.**
-- **Local modules are limited to TypeScript, JavaScript, MJS, JSON, and declaration files; vendored remote modules
-  exclude JSON.**
+- **Local modules support TypeScript, JavaScript, MJS, JSON, and declarations; vendored remote modules support
+  TypeScript, JavaScript, MJS, and declarations.**
 - **Only static ESM, string-literal runtime `import()`, and TypeScript `import()` type specifiers are rewritten;
   computed runtime `import()`, `import.meta.resolve()`, CommonJS, TypeScript `import = require`, module
   declarations/augmentations, triple-slash references, and JavaScript JSDoc are not.**
