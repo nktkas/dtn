@@ -12,7 +12,9 @@ export { exists };
 
 const DECLARATION_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts"];
 const GENERATED_AMD_DIRECTIVE =
-  /^(#![^\r\n\u2028\u2029]*(?:\r\n|[\n\r\u2028\u2029]))?\/\/\/ <amd-module name="file:\/\/\/[^"\r\n\u2028\u2029]+" \/>[ \t]*(?:\r\n|[\n\r\u2028\u2029]|$)/;
+  /^\/\/\/ <amd-module name="file:\/\/\/[^"\r\n\u2028\u2029]+" \/>[ \t]*(?:\r\n|[\n\r\u2028\u2029]|$)/;
+const LINE_TERMINATOR = /[\r\n\u2028\u2029]/;
+const WHITESPACE = /\s/u;
 
 // =============================================================================
 // File system
@@ -47,7 +49,35 @@ export function readText(path: string): Promise<string> {
 /** Removes Deno's machine-specific AMD name from one generated declaration. */
 export async function stripGeneratedAmdDirective(path: string): Promise<void> {
   const declaration = await readText(path);
-  await Deno.writeTextFile(path, declaration.replace(GENERATED_AMD_DIRECTIVE, "$1"));
+  let offset = 0;
+  if (declaration.startsWith("#!")) {
+    while (offset < declaration.length && !LINE_TERMINATOR.test(declaration[offset])) offset++;
+  }
+
+  // Stopping at the first token protects AMD-looking text inside declaration syntax.
+  while (offset < declaration.length) {
+    const match = declaration.slice(offset).match(GENERATED_AMD_DIRECTIVE);
+    if (match !== null) {
+      await Deno.writeTextFile(path, declaration.slice(0, offset) + declaration.slice(offset + match[0].length));
+      return;
+    }
+    if (WHITESPACE.test(declaration[offset])) {
+      offset++;
+      continue;
+    }
+    if (declaration.startsWith("//", offset)) {
+      offset += 2;
+      while (offset < declaration.length && !LINE_TERMINATOR.test(declaration[offset])) offset++;
+      continue;
+    }
+    if (declaration.startsWith("/*", offset)) {
+      const end = declaration.indexOf("*/", offset + 2);
+      if (end === -1) break;
+      offset = end + 2;
+      continue;
+    }
+    break;
+  }
 }
 
 /**
