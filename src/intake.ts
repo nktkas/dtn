@@ -44,10 +44,7 @@ export interface BuildConfig {
    * an omitted version comes from the alias's import specifier. Every alias must exist in `deno.imports`.
    */
   npmReplacements?: Record<string, string>;
-  /**
-   * Fields merged into the generated `package.json`; these engine-computed fields take precedence:
-   * `name`, `version`, `type`, `exports`, root `main`/`types`, and `dependencies`.
-   */
+  /** Fields merged into the generated `package.json`; dtn-generated values take precedence. */
   packageJson?: PackageJson;
   /** Files copied verbatim into the package root, such as `README.md` and `LICENSE`. */
   copyFiles?: string[];

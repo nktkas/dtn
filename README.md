@@ -64,10 +64,7 @@ interface BuildConfig {
    * vendoring it, given as `"name"` or `"name@version"`; an omitted version is taken from that specifier.
    */
   npmReplacements?: Record<string, string>;
-  /**
-   * Extra `package.json` fields to merge in. The engine always sets `name`, `version`, `type`, `exports`, the root
-   * `main`/`types`, and `dependencies` itself, overwriting any value you pass for those keys.
-   */
+  /** Fields merged into the generated `package.json`; dtn-generated values take precedence. */
   packageJson?: PackageJson;
   /** Files copied verbatim into the package root. */
   copyFiles?: string[];
