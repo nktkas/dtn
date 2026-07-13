@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-import-prefix
 
 /**
- * Unit tests for declaration import maps and replacement conflicts.
+ * Unit tests for declaration import maps.
  *
  * @module
  */
@@ -20,7 +20,6 @@ function index(): SpecifierIndex {
       ],
     ]),
     aliases: [{ alias: "chalk", npmName: "chalk", subpath: "", version: "^5" }],
-    replacedJsrPackages: new Map([["@valibot/valibot", "valibot"]]),
     npmDeps: { chalk: "^5" },
   });
 }
@@ -31,9 +30,4 @@ Deno.test("SpecifierIndex import maps", () => {
     "@scope/a": "./vendor/a/mod.ts",
   });
   assertEquals(index().vendorImportMap(), { chalk: "npm:chalk@^5" });
-});
-
-Deno.test("SpecifierIndex.replacedJsrConflict", () => {
-  assertEquals(index().replacedJsrConflict("jsr:@valibot/valibot@1/schema"), "valibot");
-  assertEquals(index().replacedJsrConflict("jsr:@scope/a@1"), null);
 });

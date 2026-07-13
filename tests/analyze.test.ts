@@ -257,21 +257,127 @@ Deno.test("analyze — npm replacements", async (t) => {
     assertEquals(analysis.specifiers.resolve(root, "chalk"), { kind: "npm", bare: "kleur" });
   });
 
-  await t.step("rejects a direct local import of a replaced JSR package", () => {
+  await t.step("replaces aliases independently within one JSR package", () => {
+    const root = fileUrl("src/mod.ts");
+    const hex = "https://jsr.io/@std/encoding/1.0.0/hex.ts";
+    const base64 = "https://jsr.io/@std/encoding/1.0.0/base64.ts";
+    const analysis = analyze(
+      plan(
+        {},
+        {
+          hex: "jsr:@std/encoding@1.0.0/hex",
+          base64: "jsr:@std/encoding@1.0.0/base64",
+        },
+        { hex: "encoding-hex", base64: "encoding-base64" },
+      ),
+      graph([
+        module(root, "TypeScript", [dependency("hex", hex), dependency("base64", base64)]),
+        module(hex, "TypeScript"),
+        module(base64, "TypeScript"),
+      ]),
+    );
+
+    assertEquals(analysis.vendoredCode.size, 0);
+    assertEquals(analysis.specifiers.resolve(root, "hex"), { kind: "npm", bare: "encoding-hex/hex" });
+    assertEquals(analysis.specifiers.resolve(root, "base64"), { kind: "npm", bare: "encoding-base64/base64" });
+    assertEquals(analysis.specifiers.declarationImportMap(), {
+      hex: "npm:encoding-hex@1.0.0/hex",
+      base64: "npm:encoding-base64@1.0.0/base64",
+    });
+  });
+
+  await t.step("vendors an unreplaced sibling alias", () => {
+    const root = fileUrl("src/mod.ts");
+    const hex = "https://jsr.io/@std/encoding/1.0.0/hex.ts";
+    const base64 = "https://jsr.io/@std/encoding/1.0.0/base64.ts";
+    const analysis = analyze(
+      plan(
+        {},
+        {
+          encoding: "jsr:@std/encoding@1.0.0/hex",
+          "encoding/base64": "jsr:@std/encoding@1.0.0/base64",
+        },
+        { encoding: "encoding-npm" },
+      ),
+      graph([
+        module(root, "TypeScript", [dependency("encoding", hex), dependency("encoding/base64", base64)]),
+        module(hex, "TypeScript"),
+        module(base64, "TypeScript"),
+      ]),
+    );
+
+    const src = vendoredRel(base64, "_deps", "TypeScript");
+    const target = { kind: "vendored" as const, src, emit: tsToJs(src) };
+    assertEquals(analysis.vendoredCode, new Map([[base64, { src: target.src, emit: target.emit }]]));
+    assertEquals(analysis.specifiers.resolve(root, "encoding"), { kind: "npm", bare: "encoding-npm/hex" });
+    assertEquals(analysis.specifiers.resolve(root, "encoding/base64"), target);
+    assertEquals(analysis.specifiers.declarationImportMap(), {
+      encoding: "npm:encoding-npm@1.0.0/hex",
+      "encoding/base64": `./${src}`,
+    });
+  });
+
+  await t.step("prunes a replaced alias used by a vendored module", () => {
+    const root = fileUrl("src/mod.ts");
+    const parent = "https://jsr.io/@scope/parent/1.0.0/mod.ts";
+    const shared = "https://jsr.io/@scope/shared/1.0.0/mod.ts";
+    const analysis = analyze(
+      plan(
+        {},
+        {
+          parent: "jsr:@scope/parent@1.0.0",
+          shared: "jsr:@scope/shared@1.0.0",
+        },
+        { shared: "shared-npm" },
+      ),
+      graph([
+        module(root, "TypeScript", [dependency("parent", parent)]),
+        module(parent, "TypeScript", [dependency("shared", shared)]),
+        module(shared, "TypeScript"),
+      ]),
+    );
+
+    assertEquals([...analysis.vendoredCode.keys()], [parent]);
+    assertEquals(analysis.specifiers.resolve(parent, "shared"), { kind: "npm", bare: "shared-npm" });
+  });
+
+  await t.step("allows version collisions for the same npm package", () => {
+    const root = fileUrl("src/mod.ts");
+    const analysis = analyze(
+      plan(
+        {},
+        {
+          hex: "jsr:@std/encoding@1.0.0/hex",
+          base64: "jsr:@std/encoding@2.0.0/base64",
+        },
+        { hex: "encoding-npm@^1", base64: "encoding-npm@^2" },
+      ),
+      graph([module(root, "TypeScript")]),
+    );
+
+    assertEquals(analysis.specifiers.declarationImportMap(), {
+      hex: "npm:encoding-npm@^1/hex",
+      base64: "npm:encoding-npm@^2/base64",
+    });
+    assertEquals(Object.keys(analysis.npmDeps), ["encoding-npm"]);
+    assertEquals(["^1", "^2"].includes(analysis.npmDeps["encoding-npm"]), true);
+  });
+
+  await t.step("vendors a direct JSR import independently of a replaced alias", () => {
     const root = fileUrl("src/mod.ts");
     const remote = "https://jsr.io/@valibot/valibot/1.3.1/mod.ts";
-    const error = assertThrows(
-      () =>
-        analyze(
-          plan({}, { "@v/v": "jsr:@valibot/valibot@1.3.1" }, { "@v/v": "valibot" }),
-          graph([
-            module(root, "TypeScript", [dependency("jsr:@valibot/valibot@1.3.1", remote)]),
-            module(remote, "TypeScript"),
-          ]),
-        ),
-      BuildError,
+    const direct = "jsr:@valibot/valibot@1.3.1";
+    const analysis = analyze(
+      plan({}, { "@v/v": direct }, { "@v/v": "valibot" }),
+      graph([
+        module(root, "TypeScript", [dependency("@v/v", remote), dependency(direct, remote)]),
+        module(remote, "TypeScript"),
+      ]),
     );
-    assertEquals(error.code, "DEPENDENCY_FAILED");
+
+    const src = vendoredRel(remote, "_deps", "TypeScript");
+    assertEquals(analysis.specifiers.resolve(root, "@v/v"), { kind: "npm", bare: "valibot" });
+    assertEquals(analysis.specifiers.resolve(root, direct), { kind: "vendored", src, emit: tsToJs(src) });
   });
 });
 

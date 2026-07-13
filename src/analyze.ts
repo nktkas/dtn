@@ -72,7 +72,7 @@ export interface Analysis {
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
   const npmDeps = new Map<string, string>();
   const aliases: AliasBinding[] = [];
-  const replacedJsrPackages = new Map<string, string>();
+  const importAliases = Object.keys(plan.imports).sort((a, b) => b.length - a.length);
 
   for (const [alias, replacement] of Object.entries(plan.npmReplacements)) {
     const parsedReplacement = parseReplacement(replacement);
@@ -83,16 +83,15 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     const version = parsedReplacement.version ?? parsedTarget?.version ?? "*";
     npmDeps.set(parsedReplacement.name, version);
     aliases.push({ alias, npmName: parsedReplacement.name, subpath: parsedTarget?.subpath ?? "", version });
-    if (parsedTarget?.scheme === "jsr") replacedJsrPackages.set(parsedTarget.pkg, parsedReplacement.name);
   }
 
   for (const [alias, specifier] of Object.entries(plan.imports)) {
     if (Object.hasOwn(plan.npmReplacements, alias)) continue;
-    const npm = parseRegistry(specifier);
-    if (npm?.scheme !== "npm") continue;
-    const version = npm.version ?? "*";
-    npmDeps.set(npm.pkg, version);
-    aliases.push({ alias, npmName: npm.pkg, subpath: npm.subpath, version });
+    const target = parseRegistry(specifier);
+    if (target?.scheme !== "npm") continue;
+    const version = target.version ?? "*";
+    npmDeps.set(target.pkg, version);
+    aliases.push({ alias, npmName: target.pkg, subpath: target.subpath, version });
   }
 
   const modules = new Map(graph.modules.map((module) => [module.specifier, module] as const));
@@ -112,7 +111,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     if (module === undefined) {
       throw new BuildError("DEPENDENCY_FAILED", "resolved module is absent from the graph", { subject: specifier });
     }
-    const fate = fateOf(module, replacedJsrPackages, plan.depsDir);
+    const fate = fateOf(module, plan.depsDir);
     fates.set(specifier, fate);
     if (fate.kind === "external") {
       if (fate.npm !== null && !npmDeps.has(fate.npm.name)) npmDeps.set(fate.npm.name, fate.npm.version);
@@ -121,10 +120,8 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
 
     reachable.push({ module, fate });
     for (const dependency of module.dependencies) {
-      if (
-        module.specifier.startsWith("file://") &&
-        matchesAlias(dependency.specifier, Object.keys(plan.npmReplacements))
-      ) continue;
+      const alias = matchingAlias(dependency.specifier, importAliases);
+      if (alias !== null && Object.hasOwn(plan.npmReplacements, alias)) continue;
       if (dependency.resolved !== undefined && !seen.has(dependency.resolved)) queue.push(dependency.resolved);
     }
   }
@@ -171,18 +168,14 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     edges.set(module.specifier, moduleEdges);
     for (const dependency of module.dependencies) {
       if (dependency.resolved === undefined) continue;
-      const target = targets.get(dependency.resolved) ?? npmTarget(
-        dependency.specifier,
-        dependency.resolved,
-        aliases,
-        replacedJsrPackages,
-      );
+      const target = npmTarget(dependency.specifier, dependency.resolved, importAliases, aliases) ??
+        targets.get(dependency.resolved) ?? null;
       if (target !== null) moduleEdges.set(dependency.specifier, target);
     }
   }
 
   const npmDepsRecord = Object.fromEntries(npmDeps);
-  const specifiers = new SpecifierIndex({ edges, aliases, replacedJsrPackages, npmDeps: npmDepsRecord });
+  const specifiers = new SpecifierIndex({ edges, aliases, npmDeps: npmDepsRecord });
   validateSpecifiers(reachable, specifiers);
 
   return {
@@ -199,7 +192,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
 }
 
 /** Classifies one graph module without inspecting its outgoing edges. */
-function fateOf(module: RawModule, replacedJsrPackages: Map<string, string>, depsDir: string): Fate {
+function fateOf(module: RawModule, depsDir: string): Fate {
   const media = module.mediaType;
   if (module.specifier.startsWith("file://")) {
     const path = fromFileUrl(module.specifier);
@@ -218,7 +211,6 @@ function fateOf(module: RawModule, replacedJsrPackages: Map<string, string>, dep
   if (module.specifier.startsWith("node:")) return { kind: "external", npm: null };
 
   const pkg = jsrUrlPackage(module.specifier);
-  if (pkg !== null && replacedJsrPackages.has(pkg)) return { kind: "external", npm: null };
   if (pkg === null) {
     throw new BuildError("UNSUPPORTED_MODULE", "remote modules are supported only inside the JSR graph", {
       subject: module.specifier,
@@ -247,29 +239,26 @@ function fateOf(module: RawModule, replacedJsrPackages: Map<string, string>, dep
 function npmTarget(
   written: string,
   resolved: string,
+  importAliases: string[],
   aliases: AliasBinding[],
-  replacedJsrPackages: Map<string, string>,
 ): SpecTarget | null {
-  for (const { alias, npmName, subpath } of [...aliases].sort((a, b) => b.alias.length - a.alias.length)) {
-    if (written === alias) return { kind: "npm", bare: npmName + subpath };
-    const prefix = alias.endsWith("/") ? alias : `${alias}/`;
-    if (written.startsWith(prefix)) return { kind: "npm", bare: npmName + subpath + written.slice(alias.length) };
+  const alias = matchingAlias(written, importAliases);
+  if (alias !== null) {
+    const binding = aliases.find((candidate) => candidate.alias === alias);
+    if (binding !== undefined) {
+      return { kind: "npm", bare: binding.npmName + binding.subpath + written.slice(alias.length) };
+    }
   }
 
   const registry = parseRegistry(resolved);
   if (registry?.scheme === "npm") return { kind: "npm", bare: registry.pkg + registry.subpath };
-
-  const direct = parseRegistry(written);
-  if (direct?.scheme !== "jsr") return null;
-  const npmName = replacedJsrPackages.get(direct.pkg);
-  return npmName === undefined ? null : { kind: "npm", bare: npmName + direct.subpath };
+  return null;
 }
 
-/** Whether a written specifier is captured by one of the supplied Deno package aliases. */
-function matchesAlias(specifier: string, aliases: string[]): boolean {
-  return aliases.some((alias) =>
-    specifier === alias || specifier.startsWith(alias.endsWith("/") ? alias : `${alias}/`)
-  );
+/** The exact or longest-prefix Deno package alias matching a written specifier. */
+function matchingAlias(specifier: string, aliases: string[]): string | null {
+  if (aliases.includes(specifier)) return specifier;
+  return aliases.find((alias) => specifier.startsWith(alias.endsWith("/") ? alias : `${alias}/`)) ?? null;
 }
 
 /** Fails before output is removed when a graph edge has no supported package target. */
@@ -278,18 +267,7 @@ function validateSpecifiers(
   specifiers: SpecifierIndex,
 ): void {
   for (const { module } of reachable) {
-    const local = module.specifier.startsWith("file://");
     for (const dependency of module.dependencies) {
-      if (local) {
-        const conflict = specifiers.replacedJsrConflict(dependency.specifier);
-        if (conflict !== null) {
-          throw new BuildError(
-            "DEPENDENCY_FAILED",
-            `replaced package "${conflict}" imported directly; import it through its import-map alias instead`,
-            { subject: dependency.specifier },
-          );
-        }
-      }
       if (specifiers.resolve(module.specifier, dependency.specifier) !== null) continue;
       if (dependency.specifier.startsWith("node:")) continue;
       throw new BuildError("DEPENDENCY_FAILED", "specifier has no supported package target", {
@@ -307,7 +285,6 @@ function validateSpecifiers(
 interface SpecifierIndexInput {
   edges?: Map<string, Map<string, SpecTarget>>;
   aliases: AliasBinding[];
-  replacedJsrPackages: Map<string, string>;
   npmDeps: Record<string, string>;
 }
 
@@ -315,26 +292,17 @@ interface SpecifierIndexInput {
 export class SpecifierIndex {
   private readonly _edges: Map<string, Map<string, SpecTarget>>;
   private readonly _aliases: AliasBinding[];
-  private readonly _replacedJsrPackages: Map<string, string>;
   private readonly _npmDeps: Record<string, string>;
 
   constructor(input: SpecifierIndexInput) {
     this._edges = input.edges ?? new Map();
     this._aliases = input.aliases;
-    this._replacedJsrPackages = input.replacedJsrPackages;
     this._npmDeps = input.npmDeps;
   }
 
   /** Resolves the specifier written by one concrete graph referrer. */
   resolve(referrer: string, specifier: string): SpecTarget | null {
     return this._edges.get(referrer)?.get(specifier) ?? null;
-  }
-
-  /** Returns the npm replacement conflicting with a directly written JSR specifier. */
-  replacedJsrConflict(specifier: string): string | null {
-    const parsed = parseRegistry(specifier);
-    const pkg = (parsed?.scheme === "jsr" ? parsed.pkg : null) ?? jsrUrlPackage(specifier);
-    return pkg === null ? null : (this._replacedJsrPackages.get(pkg) ?? null);
   }
 
   /** Import map used while declarations are emitted from local sources. */
