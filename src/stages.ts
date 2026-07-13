@@ -155,7 +155,13 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
     if (declaration === null) continue;
     const destination = join(plan.codeDir, declaration);
     if (await fs.exists(destination)) continue;
-    await fs.moveEmitted(jsToDts(join(out, relative(plan.repoRoot, file)))!, destination);
+    const source = join(out, relative(plan.repoRoot, file));
+    const sidecar = jsToDts(source)!;
+    // HACK:
+    // Deno emits a query-only JavaScript/MJS declaration with its source extension.
+    const emitted = await fs.exists(sidecar) ? sidecar : source;
+    await fs.moveEmitted(emitted, destination);
+    if (emitted === source) await fs.stripGeneratedAmdDirective(destination);
   }
 
   for (const rel of vendoredCopies.values()) {
@@ -206,7 +212,7 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
     const rewrite = vendorEmitted.has(fromRel)
       ? (specifier: string) => isRelative(specifier) ? relativeToNode(specifier) : specifier
       : (specifier: string) =>
-        referrer === undefined ? specifier : rewriteForNode(specifier, referrer, fromRel, specifiers);
+        referrer === undefined ? specifier : rewriteForNode(specifier, referrer, fromRel, specifiers, isDts);
     const rewritten = rewriteSpecifiers(
       source,
       path,
@@ -252,11 +258,19 @@ function relativeToNode(spec: string): string {
 }
 
 /** Resolves one emitted specifier through its original graph edge. */
-function rewriteForNode(spec: string, referrer: string, fromRel: string, specifiers: SpecifierIndex): string {
+function rewriteForNode(
+  spec: string,
+  referrer: string,
+  fromRel: string,
+  specifiers: SpecifierIndex,
+  isDts: boolean,
+): string {
   const target = specifiers.resolve(referrer, spec);
   if (target === null) return spec; // `node:` builtins and already-bare externals
   if (target.kind === "npm") return target.bare;
-  return relSpecifier(fromRel, target.emit) + (target.kind === "local" ? target.suffix : "");
+  // TypeScript NodeNext cannot resolve URL suffixes in declaration imports.
+  const suffix = target.kind === "local" && !isDts ? target.suffix : "";
+  return relSpecifier(fromRel, target.emit) + suffix;
 }
 
 // =============================================================================

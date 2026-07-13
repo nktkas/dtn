@@ -44,6 +44,12 @@ export function readText(path: string): Promise<string> {
   return Deno.readTextFile(path);
 }
 
+/** Removes Deno's machine-specific AMD name from one generated declaration. */
+export async function stripGeneratedAmdDirective(path: string): Promise<void> {
+  const declaration = await readText(path);
+  await Deno.writeTextFile(path, declaration.replace(GENERATED_AMD_DIRECTIVE, "$1"));
+}
+
 /**
  * Moves an emitted artifact into place, creating parent directories.
  *
@@ -129,8 +135,7 @@ export async function transpile(options: TranspileOptions): Promise<void> {
     // Declaration emit assigns absolute file-URL AMD names to ESM modules, exposing the build path in package types.
     for await (const path of walkFiles(options.outDir, DECLARATION_EXTENSIONS)) {
       if (existingDeclarations.has(path)) continue;
-      const declaration = await readText(path);
-      await Deno.writeTextFile(path, declaration.replace(GENERATED_AMD_DIRECTIVE, "$1"));
+      await stripGeneratedAmdDirective(path);
     }
   } catch (e) {
     throw new BuildError("EMIT_FAILED", e instanceof Error ? e.message : String(e), { cause: e });

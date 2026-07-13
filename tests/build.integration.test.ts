@@ -148,12 +148,13 @@ Deno.test("integration — escaped and query-bearing local specifiers resolve th
     {
       "deno.json": JSON.stringify({ name: "@fx/edges", version: "1.0.0", exports: "./src/mod.ts" }),
       "src/util.ts": `export const value = 1;\n`,
-      "src/mod.ts": String.raw`import { value } from ".\u002futil.ts?mode=test";` + `\nexport { value };\n`,
+      "src/mod.ts": String.raw`export { value } from ".\u002futil.ts?mode=test";` + `\n`,
     },
     { outDir: "dist" },
     async ({ dir, error }) => {
       assertEquals(error, null, error?.message);
       assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.js")), `from "./util.js?mode=test"`);
+      assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts")), `from "./util.js"`);
     },
   );
 });
@@ -251,8 +252,8 @@ Deno.test({
           exports: { ".": "./src/mod.ts", "./sub": "./src/sub.ts" },
         }),
         "src/mod.ts": `export const root = 1 as const;\n` +
-          `export { double, helper } from "./value.js";\n` +
-          `export { mjsHelper, upper } from "./native.mjs";\n` +
+          `export { double, helper } from "./value.js?mode=js";\n` +
+          `export { mjsHelper, upper } from "./native.mjs?mode=mjs";\n` +
           `export { remote, remoteHelper } from "${remote}";\n`,
         "src/sub.ts": `export function sub(value: number): string {\n  return String(value);\n}\n`,
         "src/value.js": `export { helper } from "./helper.ts";\n` +
@@ -265,6 +266,8 @@ Deno.test({
       { outDir: "dist" },
       async ({ dir, error }) => {
         assertEquals(error, null, error?.message);
+        assertEquals((await Deno.readTextFile(join(dir, "dist/esm/value.d.ts"))).includes("amd-module"), false);
+        assertEquals((await Deno.readTextFile(join(dir, "dist/esm/native.d.mts"))).includes("amd-module"), false);
         const consumer = join(dir, "consumer");
         await installPackage(join(dir, "dist"), consumer, "@fx/consumer");
         await Deno.writeTextFile(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
