@@ -241,7 +241,7 @@ Deno.test({
     const remoteTs = "data:text/typescript,export%20const%20remoteHelper%20%3D%205%20as%20const%3B";
     const remote = `data:application/javascript,${
       encodeURIComponent(
-        `export { remoteHelper } from "${remoteTs}";\nexport const remote = 4;\n`,
+        `#!/usr/bin/env node\nexport { remoteHelper } from "${remoteTs}";\nexport const remote = 4;\n`,
       )
     }`;
     await withBuild(

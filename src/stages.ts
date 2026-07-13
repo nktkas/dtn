@@ -53,7 +53,13 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
   for (const [url, rel] of vendoredCopies) {
     const rewritten = rewriteVendored(decoder.decode(await graph.readSource(url)), url, rel).code;
     await fs.writeText(join(plan.codeDir, rel), rewritten);
-    await fs.writeText(join(plan.tmpDir, rel), `// @ts-nocheck\n${rewritten}`);
+    // A hashbang must stay at byte zero; the scratch-only directive follows it.
+    const hashbang = rewritten.match(/^#![^\r\n\u2028\u2029]*(?:\r\n|[\n\r\u2028\u2029]|$)/)?.[0] ?? "";
+    const separator = hashbang !== "" && !/[\r\n\u2028\u2029]$/.test(hashbang) ? "\n" : "";
+    await fs.writeText(
+      join(plan.tmpDir, rel),
+      `${hashbang}${separator}// @ts-nocheck\n${rewritten.slice(hashbang.length)}`,
+    );
   }
 
   const vendorFiles: string[] = [];
