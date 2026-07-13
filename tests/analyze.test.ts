@@ -387,31 +387,6 @@ Deno.test("analyze — npm replacements", async (t) => {
     });
   });
 
-  await t.step("allows version collisions for the same npm package", () => {
-    const root = fileUrl("src/mod.ts");
-    const analysis = analyze(
-      plan(
-        {},
-        {
-          hex: "jsr:@std/encoding@1.0.0/hex",
-          base64: "jsr:@std/encoding@2.0.0/base64",
-        },
-        { hex: "encoding-npm@^1", base64: "encoding-npm@^2" },
-      ),
-      graph([module(root, "TypeScript")]),
-    );
-
-    assertEquals(analysis.specifiers.declarationImportMap(), {
-      imports: {
-        hex: "npm:encoding-npm@^1/hex",
-        base64: "npm:encoding-npm@^2/base64",
-      },
-      scopes: {},
-    });
-    assertEquals(Object.keys(analysis.npmDeps), ["encoding-npm"]);
-    assertEquals(["^1", "^2"].includes(analysis.npmDeps["encoding-npm"]), true);
-  });
-
   await t.step("vendors a direct JSR import independently of a replaced alias", () => {
     const root = fileUrl("src/mod.ts");
     const remote = "https://jsr.io/@valibot/valibot/1.3.1/mod.ts";
@@ -431,6 +406,64 @@ Deno.test("analyze — npm replacements", async (t) => {
       registry: "npm:valibot@1.3.1",
     });
     assertEquals(analysis.specifiers.resolve(root, direct), { kind: "vendored", src, emit: tsToJs(src) });
+  });
+});
+
+Deno.test("analyze — npm dependency requirements", async (t) => {
+  await t.step("rejects conflicting replacement requirements", () => {
+    const error = assertThrows(
+      () =>
+        analyze(
+          plan(
+            {},
+            {
+              hex: "jsr:@std/encoding@1.0.0/hex",
+              base64: "jsr:@std/encoding@2.0.0/base64",
+            },
+            { hex: "encoding-npm@^1", base64: "encoding-npm@^2" },
+          ),
+          graph([module(fileUrl("src/mod.ts"), "TypeScript")]),
+        ),
+      BuildError,
+    );
+    assertEquals(error.code, "DEPENDENCY_FAILED");
+    assertEquals(error.subject, "encoding-npm");
+  });
+
+  await t.step("rejects conflicting direct requirements", () => {
+    const root = fileUrl("src/mod.ts");
+    const error = assertThrows(
+      () =>
+        analyze(
+          plan(),
+          graph([
+            module(root, "TypeScript", [
+              dependency("npm:example@^1", "npm:example@^1"),
+              dependency("npm:example@^2", "npm:example@^2"),
+            ]),
+            module("npm:example@^1", undefined),
+            module("npm:example@^2", undefined),
+          ]),
+        ),
+      BuildError,
+    );
+    assertEquals(error.code, "DEPENDENCY_FAILED");
+    assertEquals(error.subject, "example");
+  });
+
+  await t.step("coalesces identical requirements", () => {
+    const root = fileUrl("src/mod.ts");
+    const analysis = analyze(
+      plan({}, { a: "npm:example@^1", b: "npm:example@^1" }),
+      graph([
+        module(root, "TypeScript", [
+          dependency("a", "npm:example@^1"),
+          dependency("b", "npm:example@^1"),
+        ]),
+        module("npm:example@^1", undefined),
+      ]),
+    );
+    assertEquals(analysis.npmDeps, { example: "^1" });
   });
 });
 

@@ -113,7 +113,6 @@ The intentionally supported scope is narrower than Deno's module system:
 - **Dependency graph resolution ignores `deno.lock`.**
 - **Only transpiled TypeScript gets source maps; copied JavaScript/MJS maps and mapping directives are omitted.**
 - **Validation and graph analysis preserve existing output; emission failures may leave partial output.**
-- **Conflicting versions of one npm package share one dependency entry; the winner is undefined.**
 
 ## Alternatives
 

@@ -77,6 +77,18 @@ export interface Analysis {
  */
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
   const npmDeps = new Map<string, string>();
+  const recordNpmDependency = (name: string, version: string): void => {
+    const existing = npmDeps.get(name);
+    if (existing !== undefined && existing !== version) {
+      const requirements = [existing, version].sort().map((requirement) => JSON.stringify(requirement));
+      throw new BuildError(
+        "DEPENDENCY_FAILED",
+        `npm package has conflicting version requirements ${requirements[0]} and ${requirements[1]}`,
+        { subject: name },
+      );
+    }
+    npmDeps.set(name, version);
+  };
   const aliases: AliasBinding[] = [];
   const importAliases = Object.keys(plan.imports).sort((a, b) => b.length - a.length);
 
@@ -87,7 +99,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     }
     const parsedTarget = parseRegistry(plan.imports[alias]);
     const version = parsedReplacement.version ?? parsedTarget?.version ?? "*";
-    npmDeps.set(parsedReplacement.name, version);
+    recordNpmDependency(parsedReplacement.name, version);
     aliases.push({ alias, npmName: parsedReplacement.name, subpath: parsedTarget?.subpath ?? "", version });
   }
 
@@ -96,7 +108,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     const target = parseRegistry(specifier);
     if (target?.scheme !== "npm") continue;
     const version = target.version ?? "*";
-    npmDeps.set(target.pkg, version);
+    recordNpmDependency(target.pkg, version);
     aliases.push({ alias, npmName: target.pkg, subpath: target.subpath, version });
   }
 
@@ -120,7 +132,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     const fate = fateOf(module, plan.depsDir);
     fates.set(specifier, fate);
     if (fate.kind === "external") {
-      if (fate.npm !== null && !npmDeps.has(fate.npm.name)) npmDeps.set(fate.npm.name, fate.npm.version);
+      if (fate.npm !== null) recordNpmDependency(fate.npm.name, fate.npm.version);
       continue;
     }
 
