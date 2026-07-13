@@ -153,23 +153,30 @@ Deno.test("analyze — a local query-bearing edge keeps URL identity while shari
 });
 
 Deno.test("analyze — supported copied media", async (t) => {
-  await t.step("local JavaScript, MJS, and declaration dependencies are copied", () => {
+  await t.step("local JavaScript, MJS, JSON, and declaration dependencies are copied", () => {
     const root = fileUrl("src/mod.ts");
-    const files = [fileUrl("src/a.js"), fileUrl("src/b.mjs"), fileUrl("src/types.d.ts")];
+    const files = [fileUrl("src/a.js"), fileUrl("src/b.mjs"), fileUrl("src/data.json"), fileUrl("src/types.d.ts")];
     const analysis = analyze(
       plan(),
       graph([
         module(root, "TypeScript", [
           dependency("./a.js", files[0]),
           dependency("./b.mjs", files[1]),
-          dependency("./types.d.ts", files[2]),
+          dependency("./data.json", files[2]),
+          dependency("./types.d.ts", files[3]),
         ]),
         module(files[0], "JavaScript"),
         module(files[1], "Mjs"),
-        module(files[2], "Dts"),
+        module(files[2], "Json"),
+        module(files[3], "Dts"),
       ]),
     );
-    assertEquals([...analysis.localCopies].sort(), ["/repo/src/a.js", "/repo/src/b.mjs", "/repo/src/types.d.ts"]);
+    assertEquals([...analysis.localCopies].sort(), [
+      "/repo/src/a.js",
+      "/repo/src/b.mjs",
+      "/repo/src/data.json",
+      "/repo/src/types.d.ts",
+    ]);
   });
 
   await t.step("JSR JavaScript, MJS, and declarations retain media-specific artifacts", () => {
@@ -202,7 +209,7 @@ Deno.test("analyze — supported copied media", async (t) => {
 });
 
 Deno.test("analyze — unsupported module scope", async (t) => {
-  for (const [name, media] of [["CommonJS", "Cjs"], ["JSON", "Json"], ["Wasm", "Wasm"]] as const) {
+  for (const [name, media] of [["CommonJS", "Cjs"], ["Wasm", "Wasm"]] as const) {
     await t.step(`rejects local ${name}`, () => {
       const root = fileUrl("src/mod.ts");
       const target = fileUrl(`src/x-${name}`);

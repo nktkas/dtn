@@ -15,7 +15,7 @@ import { isRelative, jsrUrlPackage, parseRegistry, parseReplacement, toPosix, ts
 // =============================================================================
 
 /** Local source media copied into the package instead of being transpiled. */
-const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts"]);
+const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Json"]);
 
 /** JSR media copied and rewritten without transpilation. */
 const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts"]);

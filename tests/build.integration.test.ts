@@ -380,35 +380,48 @@ Deno.test("integration — unsupported config features fail before replacing pri
   }
 });
 
-Deno.test("integration — unsupported module media and arbitrary remote origins fail loudly", async (t) => {
-  await t.step("local JSON is unsupported", async () => {
-    await withBuild(
-      {
-        "deno.json": JSON.stringify({ name: "@fx/json", version: "1.0.0", exports: "./src/mod.ts" }),
-        "src/data.json": `{ "value": 1 }\n`,
-        "src/mod.ts": `import data from "./data.json" with { type: "json" };\nexport const value = data.value;\n`,
-      },
-      { outDir: "dist" },
-      ({ error }) => {
-        assertEquals(error?.code, "UNSUPPORTED_MODULE");
-        return Promise.resolve();
-      },
-    );
-  });
+Deno.test("integration — local JSON dependencies are copied and execute in Node", async () => {
+  const json = `{ "value": 1 }\n`;
+  await withBuild(
+    {
+      "deno.json": JSON.stringify({ name: "@fx/json", version: "1.0.0", exports: "./src/mod.ts" }),
+      "src/data.json": json,
+      "src/mod.ts": `import data from "./data.json" with { type: "json" };\n` +
+        `export const value = data.value;\n` +
+        `export { default as raw } from "./data.json" with { type: "json" };\n`,
+    },
+    { outDir: "dist" },
+    async ({ dir, error }) => {
+      assertEquals(error, null, error?.message);
+      assertEquals(await Deno.readTextFile(join(dir, "dist/esm/data.json")), json);
+      assertEquals(
+        await runCommand(
+          "node",
+          [
+            "--input-type=module",
+            "--eval",
+            `const { raw, value } = await import("./dist/esm/mod.js"); console.log(value + raw.value);`,
+          ],
+          dir,
+        ),
+        "2",
+      );
+    },
+  );
+});
 
-  await t.step("a data URL is outside the JSR graph", async () => {
-    await withBuild(
-      {
-        "deno.json": JSON.stringify({ name: "@fx/remote", version: "1.0.0", exports: "./src/mod.ts" }),
-        "src/mod.ts": `import value from "data:text/javascript,export default 1";\nexport { value };\n`,
-      },
-      { outDir: "dist" },
-      ({ error }) => {
-        assertEquals(error?.code, "UNSUPPORTED_MODULE");
-        return Promise.resolve();
-      },
-    );
-  });
+Deno.test("integration — arbitrary remote origins fail loudly", async () => {
+  await withBuild(
+    {
+      "deno.json": JSON.stringify({ name: "@fx/remote", version: "1.0.0", exports: "./src/mod.ts" }),
+      "src/mod.ts": `import value from "data:text/javascript,export default 1";\nexport { value };\n`,
+    },
+    { outDir: "dist" },
+    ({ error }) => {
+      assertEquals(error?.code, "UNSUPPORTED_MODULE");
+      return Promise.resolve();
+    },
+  );
 });
 
 Deno.test("integration — build root and compiler options belong to the target project", async () => {
