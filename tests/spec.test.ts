@@ -58,6 +58,10 @@ Deno.test("vendoredRel — portable media-aware URL identity", async (t) => {
       vendoredRel(base, "_deps", "TypeScript"),
       vendoredRel("https://jsr.io/@scope/pkg/1/Mod", "_deps", "TypeScript"),
     );
+    assertNotEquals(
+      vendoredRel("data:application/typescript,export%20const%20value%20%3D%201", "_deps", "TypeScript"),
+      vendoredRel("data:Application/typescript,export%20const%20value%20%3D%201", "_deps", "TypeScript"),
+    );
   });
 
   await t.step("long URL segments are split below filesystem component limits", () => {

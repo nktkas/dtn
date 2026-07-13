@@ -90,7 +90,8 @@ export function vendoredRel(
 ): string {
   const u = new URL(url);
   const segments = portableComponents("h", u.host);
-  for (const segment of u.pathname.slice(1).split("/")) segments.push(...portableComponents("p", segment));
+  const pathname = u.pathname.startsWith("/") ? u.pathname.slice(1) : u.pathname;
+  for (const segment of pathname.split("/")) segments.push(...portableComponents("p", segment));
   if (u.search !== "") segments.push(...portableComponents("q", u.search.slice(1)));
   if (u.hash !== "") segments.push(...portableComponents("f", u.hash.slice(1)));
 
