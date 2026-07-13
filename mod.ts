@@ -2,7 +2,7 @@
  * Turns a Deno project into an ESM-only npm package — file for file, not a bundle.
  *
  * Rewrites specifiers for Node, replaces or vendors dependencies,
- * and synthesizes `package.json` while preserving runtime behavior, public types, and source maps.
+ * and synthesizes `package.json` while preserving runtime behavior, public types, and generated source maps.
  *
  * @example
  * ```ts ignore
@@ -52,11 +52,17 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
 /**
  * Builds the package described by {@linkcode config} into `config.outDir`.
  *
- * The contract below is trusted unchecked; breaking it yields undefined output, not a `BuildError`:
+ * Limitations:
+ * - Only transpiled TypeScript gets source maps; copied JavaScript/MJS maps and mapping directives are omitted.
+ * - Dependency graph resolution ignores `deno.lock`.
+ * - Deno runtime APIs are not shimmed for Node.
  * - The `deno.json` import map's `scopes` are not supported.
  * - Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.
- * - Dynamic `import()` specifiers are not rewritten.
- * - Two version requirements for one npm package collide on a single `dependencies` entry; which wins is undefined.
+ * - Only static ESM and TypeScript `import()` type specifiers are rewritten; runtime `import()`, `import.meta.resolve()`,
+ *   CommonJS, TypeScript `import = require`, module declarations/augmentations, triple-slash references, and JavaScript
+ *   JSDoc are not.
+ * - Conflicting versions of one npm package share one dependency entry; the winner is undefined.
+ * - Validation and graph analysis preserve existing output; emission failures may leave partial output.
  *
  * @param config Package metadata, output policy, registry replacements, and project root.
  * @return A promise fulfilled after all package artifacts have been written.
