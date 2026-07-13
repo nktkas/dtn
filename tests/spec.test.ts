@@ -7,7 +7,7 @@
  */
 
 import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
-import { jsrUrlPackage, makeResolver, parseRegistry, parseReplacement, vendoredRel } from "../src/spec.ts";
+import { makeResolver, parseRegistry, parseReplacement, vendoredRel } from "../src/spec.ts";
 
 Deno.test("parseRegistry", () => {
   assertEquals(parseRegistry("npm:chalk@^5/sub"), {
@@ -30,11 +30,6 @@ Deno.test("parseReplacement", () => {
   assertEquals(parseReplacement("@scope/pkg"), { name: "@scope/pkg", version: undefined });
   assertEquals(parseReplacement(""), null);
   assertEquals(parseReplacement("@broken"), null);
-});
-
-Deno.test("jsrUrlPackage", () => {
-  assertEquals(jsrUrlPackage("https://jsr.io/@std/encoding/1.0.0/hex.ts"), "@std/encoding");
-  assertEquals(jsrUrlPackage("https://example.com/@std/encoding/1.0.0/hex.ts"), null);
 });
 
 Deno.test("vendoredRel — portable media-aware URL identity", async (t) => {

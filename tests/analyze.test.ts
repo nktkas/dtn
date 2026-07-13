@@ -206,6 +206,20 @@ Deno.test("analyze — supported copied media", async (t) => {
       ]),
     );
   });
+
+  await t.step("TypeScript from an arbitrary remote origin is vendored", () => {
+    const root = fileUrl("src/mod.ts");
+    const remote = "https://example.com/mod.ts";
+    const analysis = analyze(
+      plan(),
+      graph([
+        module(root, "TypeScript", [dependency(remote, remote)]),
+        module(remote, "TypeScript"),
+      ]),
+    );
+    const src = vendoredRel(remote, "_deps", "TypeScript");
+    assertEquals(analysis.vendoredCode, new Map([[remote, { src, emit: tsToJs(src) }]]));
+  });
 });
 
 Deno.test("analyze — unsupported module scope", async (t) => {
@@ -220,16 +234,7 @@ Deno.test("analyze — unsupported module scope", async (t) => {
     });
   }
 
-  await t.step("rejects arbitrary hosted modules outside JSR", () => {
-    const root = fileUrl("src/mod.ts");
-    const remote = "https://example.com/mod.ts";
-    throwsCode([
-      module(root, "TypeScript", [dependency(remote, remote)]),
-      module(remote, "TypeScript"),
-    ], "UNSUPPORTED_MODULE");
-  });
-
-  await t.step("rejects unsupported media inside JSR", () => {
+  await t.step("rejects unsupported remote media", () => {
     const root = fileUrl("src/mod.ts");
     const remote = "https://jsr.io/@scope/pkg/1/data.json";
     throwsCode([

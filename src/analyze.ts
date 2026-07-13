@@ -8,7 +8,7 @@ import { common, dirname, fromFileUrl, relative } from "@std/path";
 import { BuildError } from "./errors.ts";
 import type { Plan } from "./intake.ts";
 import type { RawGraph, RawMediaType, RawModule } from "./graph.ts";
-import { isRelative, jsrUrlPackage, parseRegistry, parseReplacement, toPosix, tsToJs, vendoredRel } from "./spec.ts";
+import { isRelative, parseRegistry, parseReplacement, toPosix, tsToJs, vendoredRel } from "./spec.ts";
 
 // =============================================================================
 // Classification
@@ -17,7 +17,7 @@ import { isRelative, jsrUrlPackage, parseRegistry, parseReplacement, toPosix, ts
 /** Local source media copied into the package instead of being transpiled. */
 const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Json"]);
 
-/** JSR media copied and rewritten without transpilation. */
+/** Remote media copied and rewritten without transpilation. */
 const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts"]);
 
 /** What becomes of one reachable graph module. */
@@ -58,9 +58,9 @@ export interface Analysis {
   localFiles: string[];
   /** Absolute local JavaScript/MJS/declaration paths copied verbatim. */
   localCopies: string[];
-  /** JSR TypeScript URL to staged source and emitted JavaScript paths. */
+  /** Remote TypeScript URL to staged source and emitted JavaScript paths. */
   vendoredCode: Map<string, { src: string; emit: string }>;
-  /** JSR JavaScript/MJS/declaration URL to copied package path. */
+  /** Remote JavaScript/MJS/declaration URL to copied package path. */
   vendoredCopies: Map<string, string>;
   /** Emitted package-relative module path to its original graph referrer. */
   sourceByOutput: Map<string, string>;
@@ -72,7 +72,7 @@ export interface Analysis {
 /**
  * Classifies every module reachable from the entry points.
  *
- * @throws {BuildError} `UNSUPPORTED_MODULE` for an unsupported local medium, remote origin, or JSR medium.
+ * @throws {BuildError} `UNSUPPORTED_MODULE` for an unsupported local or remote medium.
  * @throws {BuildError} `DEPENDENCY_FAILED` when a module cannot be loaded or an edge cannot become package output.
  */
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
@@ -220,12 +220,6 @@ function fateOf(module: RawModule, depsDir: string): Fate {
   }
   if (module.specifier.startsWith("node:")) return { kind: "external", npm: null };
 
-  const pkg = jsrUrlPackage(module.specifier);
-  if (pkg === null) {
-    throw new BuildError("UNSUPPORTED_MODULE", "remote modules are supported only inside the JSR graph", {
-      subject: module.specifier,
-    });
-  }
   if (module.error !== undefined) {
     throw new BuildError("DEPENDENCY_FAILED", module.error, { subject: module.specifier });
   }
@@ -240,7 +234,7 @@ function fateOf(module: RawModule, depsDir: string): Fate {
       rel: vendoredRel(module.specifier, depsDir, media as "JavaScript" | "Mjs" | "Dts"),
     };
   }
-  throw new BuildError("UNSUPPORTED_MODULE", `JSR module has unsupported media type ${media}`, {
+  throw new BuildError("UNSUPPORTED_MODULE", `remote module has unsupported media type ${media}`, {
     subject: module.specifier,
   });
 }
@@ -347,7 +341,7 @@ export class SpecifierIndex {
     return { imports: Object.fromEntries(map), scopes: this._vendorScopes() };
   }
 
-  /** Import map used while declarations are emitted from vendored JSR sources. */
+  /** Import map used while declarations are emitted from vendored remote sources. */
   vendorImportMap(): DeclarationImportMap {
     const map = new Map(Object.entries(this._npmDeps).map(([name, version]) => [name, `npm:${name}@${version}`]));
     return { imports: Object.fromEntries(map), scopes: this._vendorScopes() };

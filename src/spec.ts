@@ -12,7 +12,6 @@ import { dirname, relative } from "@std/path";
 
 /** Matches `scheme:[/]name[@version][/subpath]`. The package name may be unscoped or use `@scope/name`. */
 const REGISTRY_SPECIFIER = /^(npm|jsr):\/?(@[^/]+\/[^@/]+|[^@/]+)(?:@([^/]+))?(\/.*)?$/;
-const JSR_URL = /^https:\/\/jsr\.io\/(@[^/]+\/[^/]+)\//;
 
 /**
  * A parsed `npm:`/`jsr:` specifier.
@@ -48,15 +47,6 @@ interface ParsedSpecifier {
 export function parseRegistry(spec: string): ParsedSpecifier | null {
   const m = spec.match(REGISTRY_SPECIFIER);
   return m ? { scheme: m[1] as "npm" | "jsr", pkg: m[2], version: m[3], subpath: m[4] ?? "" } : null;
-}
-
-/**
- * The jsr package (`@scope/name`) of a `https://jsr.io/...` module URL, or `null` for any other URL.
- *
- * @see https://jsr.io/docs/api#modules
- */
-export function jsrUrlPackage(url: string): string | null {
-  return url.match(JSR_URL)?.[1] ?? null;
 }
 
 /**

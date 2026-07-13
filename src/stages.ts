@@ -29,7 +29,7 @@ const EMITTED_EXTENSIONS = [".js", ".d.ts", ".js.map"];
 // =============================================================================
 
 /**
- * Inlines JSR dependencies: JavaScript and declarations are copied, while TypeScript is rewritten and transpiled.
+ * Inlines remote dependencies: JavaScript and declarations are copied, while TypeScript is rewritten and transpiled.
  *
  * @throws {BuildError} `DEPENDENCY_FAILED` when a vendored source cannot be read from the Deno cache.
  * @throws {BuildError} `EMIT_FAILED` when vendored TypeScript cannot be transpiled.

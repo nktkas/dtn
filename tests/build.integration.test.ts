@@ -410,16 +410,26 @@ Deno.test("integration — local JSON dependencies are copied and execute in Nod
   );
 });
 
-Deno.test("integration — arbitrary remote origins fail loudly", async () => {
+Deno.test("integration — arbitrary remote modules are vendored and execute in Node", async () => {
+  const remote = "data:text/typescript,export%20default%201%20as%20const";
   await withBuild(
     {
       "deno.json": JSON.stringify({ name: "@fx/remote", version: "1.0.0", exports: "./src/mod.ts" }),
-      "src/mod.ts": `import value from "data:text/javascript,export default 1";\nexport { value };\n`,
+      "src/mod.ts": `import value from "${remote}";\nexport { value };\n`,
     },
     { outDir: "dist" },
-    ({ error }) => {
-      assertEquals(error?.code, "UNSUPPORTED_MODULE");
-      return Promise.resolve();
+    async ({ dir, error }) => {
+      assertEquals(error, null, error?.message);
+      const emit = tsToJs(vendoredRel(remote, "_deps", "TypeScript"));
+      assert(await exists(join(dir, "dist/esm", emit)));
+      assertEquals(
+        await runCommand(
+          "node",
+          ["--input-type=module", "--eval", `console.log((await import("./dist/esm/mod.js")).value)`],
+          dir,
+        ),
+        "1",
+      );
     },
   );
 });
