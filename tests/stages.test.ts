@@ -12,7 +12,7 @@ import { analyze } from "../src/analyze.ts";
 import { BuildError } from "../src/errors.ts";
 import type { RawDependency, RawGraph, RawMediaType, RawModule } from "../src/graph.ts";
 import type { Plan } from "../src/intake.ts";
-import { relSpecifier } from "../src/spec.ts";
+import { jsToDts, relSpecifier } from "../src/spec.ts";
 import { rewriteStage, vendorStage } from "../src/stages.ts";
 
 const NETWORK = Deno.env.get("DTN_INTEGRATION") === "1";
@@ -244,11 +244,22 @@ Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are st
     const ts = "https://jsr.io/@scope/pkg/1/entry.ts";
     const js = "https://jsr.io/@scope/pkg/1/mod.js";
     const mjs = "https://jsr.io/@scope/pkg/1/util.mjs";
+    const helper = "https://jsr.io/@scope/pkg/1/helper.ts";
     const dts = "https://jsr.io/@scope/pkg/1/types.d.ts";
     const sources = new Map([
-      [ts, `import type { Config } from "./types.d.ts";\nexport const config: Config = {};\n`],
+      [
+        ts,
+        `import type { Config } from "./types.d.ts";\n` +
+        `export { remoteValue } from "./util.mjs";\n` +
+        `export const config: Config = {};\n`,
+      ],
       [js, `export { value } from "./util.mjs";\n//# sourceMappingURL=mod.js.map\n`],
-      [mjs, `export const value = 1;\n/*@ sourceMappingURL=util.mjs.map */\n`],
+      [
+        mjs,
+        `export { remoteValue } from "./helper.ts";\n` +
+        `export const value = 1;\n/*@ sourceMappingURL=util.mjs.map */\n`,
+      ],
+      [helper, `export const remoteValue = 2 as const;\n`],
       [
         dts,
         `/// <amd-module name="file:///author/owned-name" />\n` +
@@ -262,9 +273,10 @@ Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are st
           dep("jsr:@scope/pkg@1", js),
           dep("jsr:@scope/pkg@1/types", dts),
         ]),
-        mod(ts, "TypeScript", [dep("./types.d.ts", dts)]),
+        mod(ts, "TypeScript", [dep("./types.d.ts", dts), dep("./util.mjs", mjs)]),
         mod(js, "JavaScript", [dep("./util.mjs", mjs)]),
-        mod(mjs, "Mjs"),
+        mod(mjs, "Mjs", [dep("./helper.ts", helper)]),
+        mod(helper, "TypeScript"),
         mod(dts, "Dts"),
       ],
       readSource: (specifier) => {
@@ -286,6 +298,12 @@ Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are st
     assertEquals(shipped.includes("@ts-nocheck"), false);
     assertEquals(shipped.includes("sourceMappingURL"), false);
     assertEquals((await Deno.readTextFile(join(p.codeDir, mjsRel))).includes("sourceMappingURL"), false);
+    const mjsDeclaration = jsToDts(mjsRel)!;
+    const helperEmit = analysis.vendoredCode.get(helper)!.emit;
+    assertStringIncludes(
+      await Deno.readTextFile(join(p.codeDir, mjsDeclaration)),
+      `from "${relSpecifier(mjsDeclaration, helperEmit)}"`,
+    );
     assertEquals(await Deno.readTextFile(join(p.codeDir, dtsRel)), sources.get(dts));
     assertStringIncludes(await Deno.readTextFile(join(p.tmpDir, jsRel)), "@ts-nocheck");
   } finally {

@@ -8,7 +8,7 @@ import { common, dirname, fromFileUrl, relative } from "@std/path";
 import { BuildError } from "./errors.ts";
 import type { Plan } from "./intake.ts";
 import type { RawGraph, RawMediaType, RawModule } from "./graph.ts";
-import { isRelative, parseRegistry, parseReplacement, toPosix, tsToJs, vendoredRel } from "./spec.ts";
+import { isRelative, jsToDts, parseRegistry, parseReplacement, toPosix, tsToJs, vendoredRel } from "./spec.ts";
 
 // =============================================================================
 // Classification
@@ -56,7 +56,7 @@ export interface Analysis {
   srcRoot: string;
   /** Absolute local TypeScript paths passed to `deno transpile`. */
   localFiles: string[];
-  /** Absolute local JavaScript/MJS/declaration paths copied verbatim. */
+  /** Absolute local JavaScript/MJS/JSON/declaration paths copied verbatim. */
   localCopies: string[];
   /** Remote TypeScript URL to staged source and emitted JavaScript paths. */
   vendoredCode: Map<string, { src: string; emit: string }>;
@@ -167,6 +167,12 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
       targets.set(module.specifier, { kind: "local", emit, suffix: url.search + url.hash });
       sourceByOutput.set(emit, module.specifier);
       if (fate.kind === "transpile") sourceByOutput.set(emit.replace(/\.js$/, ".d.ts"), module.specifier);
+      else {
+        const declaration = jsToDts(emit);
+        if (declaration !== null && !sourceByOutput.has(declaration)) {
+          sourceByOutput.set(declaration, module.specifier);
+        }
+      }
       continue;
     }
     if (fate.kind === "vendorCode") {

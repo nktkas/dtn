@@ -19,7 +19,7 @@ import {
   sourceMappingComment,
   updateGeneratedSourceMap,
 } from "./rewrite.ts";
-import { isRelative, relSpecifier, toPosix, tsToJs } from "./spec.ts";
+import { isRelative, jsToDts, relSpecifier, toPosix, tsToJs } from "./spec.ts";
 
 /** Artifact extensions emitted for each transpiled TypeScript source. */
 const EMITTED_EXTENSIONS = [".js", ".d.ts", ".js.map"];
@@ -110,13 +110,13 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
 // =============================================================================
 
 /**
- * Type-checks and transpiles local `.ts` sources, mirrors their `.js`/`.js.map`/`.d.ts` artifacts,
+ * Type-checks and transpiles local `.ts` sources, retains generated declaration sidecars for copied JavaScript/MJS,
  * and copies other supported sources verbatim.
  *
  * @throws {BuildError} `EMIT_FAILED` when the `deno transpile` subprocess exits non-zero.
  */
 export async function transpileStage(analysis: Analysis): Promise<void> {
-  const { plan, specifiers, localFiles, localCopies, srcRoot } = analysis;
+  const { plan, specifiers, localFiles, localCopies, srcRoot, vendoredCopies } = analysis;
 
   const importMap = join(plan.tmpDir, "importmap.json");
   await fs.writeText(importMap, JSON.stringify(specifiers.declarationImportMap()));
@@ -145,7 +145,26 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
 
   // Non-`.ts` local sources go in verbatim; the rewrite stage still adjusts their import specifiers.
   for (const file of localCopies) {
-    await fs.copyFile(file, join(plan.codeDir, relative(srcRoot, file)));
+    const rel = relative(srcRoot, file);
+    await fs.copyFile(file, join(plan.codeDir, rel));
+  }
+
+  for (const file of localCopies) {
+    const rel = relative(srcRoot, file);
+    const declaration = jsToDts(rel);
+    if (declaration === null) continue;
+    const destination = join(plan.codeDir, declaration);
+    if (await fs.exists(destination)) continue;
+    await fs.moveEmitted(jsToDts(join(out, relative(plan.repoRoot, file)))!, destination);
+  }
+
+  for (const rel of vendoredCopies.values()) {
+    const declaration = jsToDts(rel);
+    if (declaration === null) continue;
+    const destination = join(plan.codeDir, declaration);
+    if (await fs.exists(destination)) continue;
+    const staged = join(plan.tmpDir, rel);
+    await fs.moveEmitted(jsToDts(join(out, relative(plan.repoRoot, staged)))!, destination);
   }
 }
 
@@ -163,7 +182,12 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
 
   // vendorStage already finalized these files' non-relative specifiers.
   // Re-resolving them could let a same-named import-map alias capture the output; only the deferred `.ts` → `.js` flip remains.
-  const vendorEmitted = new Set<string>(vendoredCopies.values());
+  const vendorEmitted = new Set<string>();
+  for (const rel of vendoredCopies.values()) {
+    vendorEmitted.add(rel);
+    const declaration = jsToDts(rel);
+    if (declaration !== null) vendorEmitted.add(declaration);
+  }
   for (const { emit } of vendoredCode.values()) {
     vendorEmitted.add(emit);
     vendorEmitted.add(emit.replace(/\.js$/, ".d.ts"));
@@ -173,9 +197,9 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
     ...localCopies.map((file) => toPosix(relative(srcRoot, file))),
   ]);
 
-  for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".ts"])) {
+  for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".ts", ".mts"])) {
     const fromRel = toPosix(relative(plan.codeDir, path));
-    const isDts = path.endsWith(".d.ts");
+    const isDts = /\.d\.[cm]?ts$/.test(path);
 
     const source = await fs.readText(path);
     const referrer = sourceByOutput.get(fromRel);

@@ -189,11 +189,13 @@ Deno.test("integration — local JavaScript, MJS, and declaration dependencies a
       "deno.json": JSON.stringify({ name: "@fx/copies", version: "1.0.0", exports: "./src/mod.ts" }),
       "src/legacy.js": `export { helper } from "./util.ts";\n//# sourceMappingURL=legacy.js.map\n`,
       "src/native.mjs": `export const native = 2;\n`,
-      "src/types.d.ts": `export interface Config { answer: number }\n`,
+      "src/legacy.d.ts": `import type { Details } from "./types.ts";\n` +
+        `export interface Config { answer: number; details?: Details }\n`,
+      "src/types.ts": `export interface Details { label: string }\n`,
       "src/util.ts": `export const helper = 1;\n`,
       "src/mod.ts": `import { helper } from "./legacy.js";\n` +
         `import { native } from "./native.mjs";\n` +
-        `import type { Config } from "./types.d.ts";\n` +
+        `import type { Config } from "./legacy.d.ts";\n` +
         `export const value: Config = { answer: helper + native };\n`,
     },
     { outDir: "dist" },
@@ -203,7 +205,7 @@ Deno.test("integration — local JavaScript, MJS, and declaration dependencies a
       assertStringIncludes(legacy, `from "./util.js"`);
       assertEquals(legacy.includes("sourceMappingURL"), false);
       assert(await exists(join(dir, "dist/esm/native.mjs")));
-      assert(await exists(join(dir, "dist/esm/types.d.ts")));
+      assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/legacy.d.ts")), `from "./types.js"`);
     },
   );
 });
@@ -235,6 +237,12 @@ Deno.test({
   name: "integration — generated root and subpath exports work in Node and TypeScript NodeNext",
   ignore: !NETWORK,
   fn: async (t) => {
+    const remoteTs = "data:text/typescript,export%20const%20remoteHelper%20%3D%205%20as%20const%3B";
+    const remote = `data:application/javascript,${
+      encodeURIComponent(
+        `export { remoteHelper } from "${remoteTs}";\nexport const remote = 4;\n`,
+      )
+    }`;
     await withBuild(
       {
         "deno.json": JSON.stringify({
@@ -242,8 +250,17 @@ Deno.test({
           version: "1.0.0",
           exports: { ".": "./src/mod.ts", "./sub": "./src/sub.ts" },
         }),
-        "src/mod.ts": `export const root = 1 as const;\n`,
+        "src/mod.ts": `export const root = 1 as const;\n` +
+          `export { double, helper } from "./value.js";\n` +
+          `export { mjsHelper, upper } from "./native.mjs";\n` +
+          `export { remote, remoteHelper } from "${remote}";\n`,
         "src/sub.ts": `export function sub(value: number): string {\n  return String(value);\n}\n`,
+        "src/value.js": `export { helper } from "./helper.ts";\n` +
+          `/** @param {number} value */\nexport function double(value) { return value * 2; }\n`,
+        "src/helper.ts": `export const helper = 8 as const;\n`,
+        "src/mjs-helper.ts": `export const mjsHelper = 9 as const;\n`,
+        "src/native.mjs": `export { mjsHelper } from "./mjs-helper.ts";\n` +
+          `/** @param {string} value */\nexport function upper(value) { return value.toUpperCase(); }\n`,
       },
       { outDir: "dist" },
       async ({ dir, error }) => {
@@ -255,19 +272,27 @@ Deno.test({
         await t.step("Node resolves and executes both package exports", async () => {
           await Deno.writeTextFile(
             join(consumer, "runtime.js"),
-            `import { root } from "@fx/consumer";\nimport { sub } from "@fx/consumer/sub";\nconsole.log(root + ":" + sub(2));\n`,
+            `import { double, helper, mjsHelper, remote, remoteHelper, root, upper } from "@fx/consumer";\n` +
+              `import { sub } from "@fx/consumer/sub";\n` +
+              `console.log([root, sub(2), double(3), upper("ok"), remote, helper, mjsHelper, remoteHelper].join(":"));\n`,
           );
-          assertEquals(await runCommand("node", ["runtime.js"], consumer), "1:2");
+          assertEquals(await runCommand("node", ["runtime.js"], consumer), "1:2:6:OK:4:8:9:5");
         });
 
         await t.step("TypeScript resolves both declaration exports with NodeNext", async () => {
           await checkNodeNext(
             consumer,
-            `import { root } from "@fx/consumer";\n` +
+            `import { double, helper, mjsHelper, remote, remoteHelper, root, upper } from "@fx/consumer";\n` +
               `import { sub } from "@fx/consumer/sub";\n` +
               `const exact: 1 = root;\n` +
               `const text: string = sub(exact);\n` +
-              `void text;\n`,
+              `const doubled: number = double(2);\n` +
+              `const uppered: string = upper(text);\n` +
+              `const remoteExact: 4 = remote;\n` +
+              `const helperExact: 8 = helper;\n` +
+              `const mjsHelperExact: 9 = mjsHelper;\n` +
+              `const remoteHelperExact: 5 = remoteHelper;\n` +
+              `void [doubled, helperExact, mjsHelperExact, remoteExact, remoteHelperExact, uppered];\n`,
           );
         });
       },

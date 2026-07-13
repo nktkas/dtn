@@ -131,6 +131,13 @@ export function tsToJs(path: string): string {
   return path.endsWith(".ts") ? `${path.slice(0, -3)}.js` : path;
 }
 
+/** The declaration sidecar emitted for a JavaScript or MJS module, or `null` for any other path. */
+export function jsToDts(path: string): string | null {
+  if (path.endsWith(".mjs")) return `${path.slice(0, -4)}.d.mts`;
+  if (path.endsWith(".js")) return `${path.slice(0, -3)}.d.ts`;
+  return null;
+}
+
 /** Rewrites OS path separators to POSIX, the form used for every specifier and `package.json` path. */
 export function toPosix(path: string): string {
   return path.replaceAll("\\", "/");

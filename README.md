@@ -5,7 +5,7 @@
 
 Deno to Node — build a Deno project into a Node-compatible project (no bundling).
 
-## Install (Deno 2.8+)
+## Install (Deno 2.9+)
 
 ```
 deno add jsr:@nktkas/dtn
