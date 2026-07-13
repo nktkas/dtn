@@ -254,6 +254,8 @@ Deno.test({
         "src/mod.ts": `export const root = 1 as const;\n` +
           `export { double, helper } from "./value.js?mode=js";\n` +
           `export { mjsHelper, upper } from "./native.mjs?mode=mjs";\n` +
+          `export type { CJS } from "./types.d.cts";\n` +
+          `export type { ESM } from "./types.d.mts";\n` +
           `export { remote, remoteHelper } from "${remote}";\n`,
         "src/sub.ts": `export function sub(value: number): string {\n  return String(value);\n}\n`,
         "src/value.js": `export { helper } from "./helper.ts";\n` +
@@ -262,6 +264,11 @@ Deno.test({
         "src/mjs-helper.ts": `export const mjsHelper = 9 as const;\n`,
         "src/native.mjs": `export { mjsHelper } from "./mjs-helper.ts";\n` +
           `/** @param {string} value */\nexport function upper(value) { return value.toUpperCase(); }\n`,
+        "src/type-helper.ts": `export interface Details { readonly label: string }\n`,
+        "src/types.d.cts": `import type { Details } from "./type-helper.ts";\n` +
+          `export interface CJS { readonly details: Details; readonly kind: "cjs" }\n`,
+        "src/types.d.mts": `import type { Details } from "./type-helper.ts";\n` +
+          `export interface ESM { readonly details: Details; readonly kind: "esm" }\n`,
       },
       { outDir: "dist" },
       async ({ dir, error }) => {
@@ -286,7 +293,10 @@ Deno.test({
           await checkNodeNext(
             consumer,
             `import { double, helper, mjsHelper, remote, remoteHelper, root, upper } from "@fx/consumer";\n` +
+              `import type { CJS, ESM } from "@fx/consumer";\n` +
               `import { sub } from "@fx/consumer/sub";\n` +
+              `const cjs: CJS = { details: { label: "cjs" }, kind: "cjs" };\n` +
+              `const esm: ESM = { details: { label: "esm" }, kind: "esm" };\n` +
               `const exact: 1 = root;\n` +
               `const text: string = sub(exact);\n` +
               `const doubled: number = double(2);\n` +
@@ -295,7 +305,7 @@ Deno.test({
               `const helperExact: 8 = helper;\n` +
               `const mjsHelperExact: 9 = mjsHelper;\n` +
               `const remoteHelperExact: 5 = remoteHelper;\n` +
-              `void [doubled, helperExact, mjsHelperExact, remoteExact, remoteHelperExact, uppered];\n`,
+              `void [cjs, doubled, esm, helperExact, mjsHelperExact, remoteExact, remoteHelperExact, uppered];\n`,
           );
         });
       },

@@ -209,7 +209,7 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
     ...localCopies.map((file) => toPosix(relative(srcRoot, file))),
   ]);
 
-  for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".ts", ".mts"])) {
+  for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".ts", ".mts", ".cts"])) {
     const fromRel = toPosix(relative(plan.codeDir, path));
     const isDts = /\.d\.[cm]?ts$/.test(path);
 

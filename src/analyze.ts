@@ -15,10 +15,10 @@ import { isRelative, jsToDts, parseRegistry, parseReplacement, toPosix, tsToJs, 
 // =============================================================================
 
 /** Local source media copied into the package instead of being transpiled. */
-const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Json"]);
+const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Dmts", "Dcts", "Json"]);
 
 /** Remote media copied and rewritten without transpilation. */
-const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts"]);
+const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Dmts", "Dcts"]);
 
 /** What becomes of one reachable graph module. */
 type Fate =
@@ -249,7 +249,7 @@ function fateOf(module: RawModule, depsDir: string): Fate {
     return {
       kind: "vendorCopy",
       url: module.specifier,
-      rel: vendoredRel(module.specifier, depsDir, media as "JavaScript" | "Mjs" | "Dts"),
+      rel: vendoredRel(module.specifier, depsDir, media as "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts"),
     };
   }
   throw new BuildError("UNSUPPORTED_MODULE", `remote module has unsupported media type ${media}`, {

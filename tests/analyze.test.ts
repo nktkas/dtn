@@ -155,7 +155,14 @@ Deno.test("analyze — a local query-bearing edge keeps URL identity while shari
 Deno.test("analyze — supported copied media", async (t) => {
   await t.step("local JavaScript, MJS, JSON, and declaration dependencies are copied", () => {
     const root = fileUrl("src/mod.ts");
-    const files = [fileUrl("src/a.js"), fileUrl("src/b.mjs"), fileUrl("src/data.json"), fileUrl("src/types.d.ts")];
+    const files = [
+      fileUrl("src/a.js"),
+      fileUrl("src/b.mjs"),
+      fileUrl("src/data.json"),
+      fileUrl("src/types.d.ts"),
+      fileUrl("src/types.d.mts"),
+      fileUrl("src/types.d.cts"),
+    ];
     const analysis = analyze(
       plan(),
       graph([
@@ -164,17 +171,23 @@ Deno.test("analyze — supported copied media", async (t) => {
           dependency("./b.mjs", files[1]),
           dependency("./data.json", files[2]),
           dependency("./types.d.ts", files[3]),
+          dependency("./types.d.mts", files[4]),
+          dependency("./types.d.cts", files[5]),
         ]),
         module(files[0], "JavaScript"),
         module(files[1], "Mjs"),
         module(files[2], "Json"),
         module(files[3], "Dts"),
+        module(files[4], "Dmts"),
+        module(files[5], "Dcts"),
       ]),
     );
     assertEquals([...analysis.localCopies].sort(), [
       "/repo/src/a.js",
       "/repo/src/b.mjs",
       "/repo/src/data.json",
+      "/repo/src/types.d.cts",
+      "/repo/src/types.d.mts",
       "/repo/src/types.d.ts",
     ]);
   });
@@ -184,6 +197,8 @@ Deno.test("analyze — supported copied media", async (t) => {
     const js = "https://jsr.io/@scope/pkg/1/a";
     const mjs = "https://jsr.io/@scope/pkg/1/b";
     const dts = "https://jsr.io/@scope/pkg/1/types";
+    const dmts = "https://jsr.io/@scope/pkg/1/types.d.mts";
+    const dcts = "https://jsr.io/@scope/pkg/1/types.d.cts";
     const analysis = analyze(
       plan(),
       graph([
@@ -191,10 +206,14 @@ Deno.test("analyze — supported copied media", async (t) => {
           dependency("jsr:@scope/pkg@1/a", js),
           dependency("jsr:@scope/pkg@1/b", mjs),
           dependency("jsr:@scope/pkg@1/types", dts),
+          dependency("jsr:@scope/pkg@1/types.mts", dmts),
+          dependency("jsr:@scope/pkg@1/types.cts", dcts),
         ]),
         module(js, "JavaScript"),
         module(mjs, "Mjs"),
         module(dts, "Dts"),
+        module(dmts, "Dmts"),
+        module(dcts, "Dcts"),
       ]),
     );
     assertEquals(
@@ -203,6 +222,8 @@ Deno.test("analyze — supported copied media", async (t) => {
         [js, vendoredRel(js, "_deps", "JavaScript")],
         [mjs, vendoredRel(mjs, "_deps", "Mjs")],
         [dts, vendoredRel(dts, "_deps", "Dts")],
+        [dmts, vendoredRel(dmts, "_deps", "Dmts")],
+        [dcts, vendoredRel(dcts, "_deps", "Dcts")],
       ]),
     );
   });

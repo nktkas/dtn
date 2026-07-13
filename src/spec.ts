@@ -86,7 +86,7 @@ export function isRelative(spec: string): boolean {
 export function vendoredRel(
   url: string,
   depsDir: string,
-  media: "TypeScript" | "JavaScript" | "Mjs" | "Dts",
+  media: "TypeScript" | "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts",
 ): string {
   const u = new URL(url);
   const segments = portableComponents("h", u.host);
@@ -95,7 +95,12 @@ export function vendoredRel(
   if (u.search !== "") segments.push(...portableComponents("q", u.search.slice(1)));
   if (u.hash !== "") segments.push(...portableComponents("f", u.hash.slice(1)));
 
-  const extension = media === "TypeScript" ? ".ts" : media === "Mjs" ? ".mjs" : media === "Dts" ? ".d.ts" : ".js";
+  let extension = ".js";
+  if (media === "TypeScript") extension = ".ts";
+  if (media === "Mjs") extension = ".mjs";
+  if (media === "Dts") extension = ".d.ts";
+  if (media === "Dmts") extension = ".d.mts";
+  if (media === "Dcts") extension = ".d.cts";
   return `${depsDir}/${segments.join("/")}/mod${extension}`;
 }
 
