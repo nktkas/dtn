@@ -32,7 +32,7 @@ type Fate =
 type SpecTarget =
   | { kind: "vendored"; src: string; emit: string }
   | { kind: "local"; emit: string; suffix: string }
-  | { kind: "npm"; bare: string };
+  | { kind: "npm"; bare: string; registry: string };
 
 /** An import-map alias bound to an npm package. */
 interface AliasBinding {
@@ -41,6 +41,12 @@ interface AliasBinding {
   /** Subpath carried by the configured registry target, including its leading slash. */
   subpath: string;
   version: string;
+}
+
+/** Import map passed to one declaration-emitting subprocess. */
+interface DeclarationImportMap {
+  imports: Record<string, string>;
+  scopes: Record<string, Record<string, string>>;
 }
 
 /** The analyzed build plan consumed by the effectful stages. */
@@ -175,7 +181,11 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
   }
 
   const npmDepsRecord = Object.fromEntries(npmDeps);
-  const specifiers = new SpecifierIndex({ edges, aliases, npmDeps: npmDepsRecord });
+  const vendorSources = new Map<string, string>([
+    ...[...vendoredCode].map(([url, { src }]) => [url, src] as const),
+    ...vendoredCopies,
+  ]);
+  const specifiers = new SpecifierIndex({ edges, aliases, vendorSources, npmDeps: npmDepsRecord });
   validateSpecifiers(reachable, specifiers);
 
   return {
@@ -246,12 +256,23 @@ function npmTarget(
   if (alias !== null) {
     const binding = aliases.find((candidate) => candidate.alias === alias);
     if (binding !== undefined) {
-      return { kind: "npm", bare: binding.npmName + binding.subpath + written.slice(alias.length) };
+      const subpath = binding.subpath + written.slice(alias.length);
+      return {
+        kind: "npm",
+        bare: binding.npmName + subpath,
+        registry: `npm:${binding.npmName}@${binding.version}${subpath}`,
+      };
     }
   }
 
   const registry = parseRegistry(resolved);
-  if (registry?.scheme === "npm") return { kind: "npm", bare: registry.pkg + registry.subpath };
+  if (registry?.scheme === "npm") {
+    return {
+      kind: "npm",
+      bare: registry.pkg + registry.subpath,
+      registry: `npm:${registry.pkg}@${registry.version ?? "*"}${registry.subpath}`,
+    };
+  }
   return null;
 }
 
@@ -285,6 +306,7 @@ function validateSpecifiers(
 interface SpecifierIndexInput {
   edges?: Map<string, Map<string, SpecTarget>>;
   aliases: AliasBinding[];
+  vendorSources?: Map<string, string>;
   npmDeps: Record<string, string>;
 }
 
@@ -292,11 +314,13 @@ interface SpecifierIndexInput {
 export class SpecifierIndex {
   private readonly _edges: Map<string, Map<string, SpecTarget>>;
   private readonly _aliases: AliasBinding[];
+  private readonly _vendorSources: Map<string, string>;
   private readonly _npmDeps: Record<string, string>;
 
   constructor(input: SpecifierIndexInput) {
     this._edges = input.edges ?? new Map();
     this._aliases = input.aliases;
+    this._vendorSources = input.vendorSources ?? new Map();
     this._npmDeps = input.npmDeps;
   }
 
@@ -306,7 +330,7 @@ export class SpecifierIndex {
   }
 
   /** Import map used while declarations are emitted from local sources. */
-  declarationImportMap(): Record<string, string> {
+  declarationImportMap(): DeclarationImportMap {
     const map = new Map<string, string>();
     for (const { alias, npmName, subpath, version } of this._aliases) {
       map.set(alias, `npm:${npmName}@${version}${subpath}`);
@@ -314,18 +338,33 @@ export class SpecifierIndex {
     for (const [referrer, edges] of this._edges) {
       if (!referrer.startsWith("file://")) continue;
       for (const [specifier, target] of edges) {
+        if (target.kind === "npm" && !specifier.startsWith("npm:")) map.set(specifier, target.registry);
         if (!isRelative(specifier) && target.kind === "vendored" && !map.has(specifier)) {
           map.set(specifier, `./${target.src}`);
         }
       }
     }
-    return Object.fromEntries(map);
+    return { imports: Object.fromEntries(map), scopes: this._vendorScopes() };
   }
 
   /** Import map used while declarations are emitted from vendored JSR sources. */
-  vendorImportMap(): Record<string, string> {
-    return Object.fromEntries(
-      Object.entries(this._npmDeps).map(([name, version]) => [name, `npm:${name}@${version}`]),
-    );
+  vendorImportMap(): DeclarationImportMap {
+    const map = new Map(Object.entries(this._npmDeps).map(([name, version]) => [name, `npm:${name}@${version}`]));
+    return { imports: Object.fromEntries(map), scopes: this._vendorScopes() };
+  }
+
+  /** Per-source npm mappings for staged vendored modules. */
+  private _vendorScopes(): Record<string, Record<string, string>> {
+    const scopes = new Map<string, Record<string, string>>();
+    for (const [referrer, edges] of this._edges) {
+      const source = this._vendorSources.get(referrer);
+      if (source === undefined) continue;
+      const imports = new Map<string, string>();
+      for (const target of edges.values()) {
+        if (target.kind === "npm") imports.set(target.bare, target.registry);
+      }
+      if (imports.size > 0) scopes.set(`./${source}`, Object.fromEntries(imports));
+    }
+    return Object.fromEntries(scopes);
   }
 }

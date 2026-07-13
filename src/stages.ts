@@ -8,6 +8,7 @@
 
 import { basename, dirname, join, relative } from "@std/path";
 import type { Analysis, SpecifierIndex } from "./analyze.ts";
+import { BuildError } from "./errors.ts";
 import * as fs from "./fs.ts";
 import type { RawGraph } from "./graph.ts";
 import { planPackageJson } from "./pkg.ts";
@@ -70,7 +71,7 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
 
   if (vendorFiles.length > 0) {
     const importMap = join(plan.tmpDir, "vendor-importmap.json");
-    await fs.writeText(importMap, JSON.stringify({ imports: specifiers.vendorImportMap() }));
+    await fs.writeText(importMap, JSON.stringify(specifiers.vendorImportMap()));
     await fs.transpile({
       importMap,
       files: vendorFiles,
@@ -118,7 +119,7 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
   const { plan, specifiers, localFiles, localCopies, srcRoot } = analysis;
 
   const importMap = join(plan.tmpDir, "importmap.json");
-  await fs.writeText(importMap, JSON.stringify({ imports: specifiers.declarationImportMap() }));
+  await fs.writeText(importMap, JSON.stringify(specifiers.declarationImportMap()));
   const out = join(plan.tmpDir, "out");
   await fs.transpile({
     importMap,
@@ -178,12 +179,24 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
 
     const source = await fs.readText(path);
     const referrer = sourceByOutput.get(fromRel);
+    const rewrite = vendorEmitted.has(fromRel)
+      ? (specifier: string) => isRelative(specifier) ? relativeToNode(specifier) : specifier
+      : (specifier: string) =>
+        referrer === undefined ? specifier : rewriteForNode(specifier, referrer, fromRel, specifiers);
     const rewritten = rewriteSpecifiers(
       source,
       path,
-      vendorEmitted.has(fromRel)
-        ? (spec) => isRelative(spec) ? relativeToNode(spec) : spec
-        : (spec) => referrer === undefined ? spec : rewriteForNode(spec, referrer, fromRel, specifiers),
+      (specifier) => {
+        const target = rewrite(specifier);
+        if (isDts && !copiedModules.has(fromRel) && target.startsWith("file:")) {
+          throw new BuildError(
+            "EMIT_FAILED",
+            "emitted declaration contains an absolute file specifier; add an explicit type annotation",
+            { subject: target },
+          );
+        }
+        return target;
+      },
       !isDts && copiedModules.has(fromRel),
     );
 

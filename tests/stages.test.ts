@@ -6,13 +6,16 @@
  * @module
  */
 
-import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import { assertEquals, assertRejects, assertStringIncludes } from "jsr:@std/assert@1";
 import { dirname, join, toFileUrl } from "jsr:@std/path@^1";
 import { analyze } from "../src/analyze.ts";
+import { BuildError } from "../src/errors.ts";
 import type { RawDependency, RawGraph, RawMediaType, RawModule } from "../src/graph.ts";
 import type { Plan } from "../src/intake.ts";
 import { relSpecifier } from "../src/spec.ts";
 import { rewriteStage, vendorStage } from "../src/stages.ts";
+
+const NETWORK = Deno.env.get("DTN_INTEGRATION") === "1";
 
 function plan(repoRoot: string, imports: Record<string, string> = {}): Plan {
   const outDir = join(repoRoot, "dist");
@@ -116,6 +119,23 @@ Deno.test("rewriteStage — the relative .ts → .js flip deferred by the vendor
   }
 });
 
+Deno.test("rewriteStage — generated declarations reject absolute file specifiers", async () => {
+  const root = await Deno.makeTempDir({ prefix: "dtn-stages-" });
+  try {
+    const p = plan(root);
+    const local = toFileUrl(join(root, "src/mod.ts")).href;
+    const analysis = analyze(p, graph([mod(local, "TypeScript")]));
+    const specifier = "file:///home/builder/.cache/deno/npm/registry.npmjs.org/zod/4.2.1/v4/index.d.cts";
+    await write(join(p.codeDir, "mod.d.ts"), `export declare const schema: import("${specifier}").ZodType;\n`);
+
+    const error = await assertRejects(() => rewriteStage(analysis), BuildError);
+    assertEquals(error.code, "EMIT_FAILED");
+    assertEquals(error.subject, specifier);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("vendorStage — a vendored map points back to the original JSR source", async () => {
   const root = await Deno.makeTempDir({ prefix: "dtn-stages-" });
   try {
@@ -145,6 +165,41 @@ Deno.test("vendorStage — a vendored map points back to the original JSR source
   }
 });
 
+Deno.test({
+  name: "vendorStage — npm subpaths preserve declaration types",
+  ignore: !NETWORK,
+  fn: async () => {
+    const root = await Deno.makeTempDir({ prefix: "dtn-stages-" });
+    try {
+      const p = plan(root);
+      const local = toFileUrl(join(root, "src/mod.ts")).href;
+      const remote = "https://jsr.io/@scope/pkg/1/mod.ts";
+      const npm = "npm:zod@4.2.1/v4";
+      const source = `import { z } from "${npm}";\nexport const schema = z.literal("typed");\n`;
+      const g: RawGraph = {
+        modules: [
+          mod(local, "TypeScript", [dep("jsr:@scope/pkg@1", remote)]),
+          mod(remote, "TypeScript", [dep(npm, npm)]),
+          mod(npm, undefined),
+        ],
+        readSource: (specifier) => {
+          if (specifier !== remote) return Promise.reject(new Error(`unexpected source ${specifier}`));
+          return Promise.resolve(new TextEncoder().encode(source));
+        },
+      };
+      const analysis = analyze(p, g);
+      await vendorStage(analysis, g);
+
+      const emit = analysis.vendoredCode.get(remote)!.emit;
+      const declaration = await Deno.readTextFile(join(p.codeDir, emit.replace(/\.js$/, ".d.ts")));
+      assertStringIncludes(declaration, `import { z } from "zod/v4";`);
+      assertStringIncludes(declaration, `schema: z.ZodLiteral<"typed">`);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+});
+
 Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are staged and rewritten", async () => {
   const root = await Deno.makeTempDir({ prefix: "dtn-stages-" });
   try {
@@ -156,7 +211,7 @@ Deno.test("vendorStage — retained JSR JavaScript, MJS, and declarations are st
     const sources = new Map([
       [js, `export { value } from "./util.mjs";\n//# sourceMappingURL=mod.js.map\n`],
       [mjs, `export const value = 1;\n/*@ sourceMappingURL=util.mjs.map */\n`],
-      [dts, `export interface Config { value: number }\n`],
+      [dts, `export type Config = import("file:///author/types.d.ts").Config;\n`],
     ]);
     const g: RawGraph = {
       modules: [

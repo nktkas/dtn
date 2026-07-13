@@ -96,7 +96,11 @@ Deno.test("analyze — representative local, npm, and JSR graph", () => {
   assertEquals(analysis.vendoredCode, new Map([[remote, { src, emit: tsToJs(src) }]]));
   assertEquals(analysis.specifiers.resolve(root, "hex"), { kind: "vendored", src, emit: tsToJs(src) });
   assertEquals(analysis.specifiers.resolve(root, "./util.ts"), { kind: "local", emit: "util.js", suffix: "" });
-  assertEquals(analysis.specifiers.resolve(root, "chalk"), { kind: "npm", bare: "chalk" });
+  assertEquals(analysis.specifiers.resolve(root, "chalk"), {
+    kind: "npm",
+    bare: "chalk",
+    registry: "npm:chalk@^5",
+  });
   assertEquals(analysis.specifiers.resolve(root, "node:fs"), null);
 });
 
@@ -241,7 +245,11 @@ Deno.test("analyze — npm replacements", async (t) => {
     );
     assertEquals(analysis.vendoredCode.size, 0);
     assertEquals(analysis.npmDeps, { valibot: "1.3.1" });
-    assertEquals(analysis.specifiers.resolve(root, "@v/v"), { kind: "npm", bare: "valibot" });
+    assertEquals(analysis.specifiers.resolve(root, "@v/v"), {
+      kind: "npm",
+      bare: "valibot",
+      registry: "npm:valibot@1.3.1",
+    });
   });
 
   await t.step("replaces an npm-target alias without retaining the original npm dependency", () => {
@@ -254,7 +262,11 @@ Deno.test("analyze — npm replacements", async (t) => {
       ]),
     );
     assertEquals(analysis.npmDeps, { kleur: "^4" });
-    assertEquals(analysis.specifiers.resolve(root, "chalk"), { kind: "npm", bare: "kleur" });
+    assertEquals(analysis.specifiers.resolve(root, "chalk"), {
+      kind: "npm",
+      bare: "kleur",
+      registry: "npm:kleur@^4",
+    });
   });
 
   await t.step("replaces aliases independently within one JSR package", () => {
@@ -278,11 +290,22 @@ Deno.test("analyze — npm replacements", async (t) => {
     );
 
     assertEquals(analysis.vendoredCode.size, 0);
-    assertEquals(analysis.specifiers.resolve(root, "hex"), { kind: "npm", bare: "encoding-hex/hex" });
-    assertEquals(analysis.specifiers.resolve(root, "base64"), { kind: "npm", bare: "encoding-base64/base64" });
+    assertEquals(analysis.specifiers.resolve(root, "hex"), {
+      kind: "npm",
+      bare: "encoding-hex/hex",
+      registry: "npm:encoding-hex@1.0.0/hex",
+    });
+    assertEquals(analysis.specifiers.resolve(root, "base64"), {
+      kind: "npm",
+      bare: "encoding-base64/base64",
+      registry: "npm:encoding-base64@1.0.0/base64",
+    });
     assertEquals(analysis.specifiers.declarationImportMap(), {
-      hex: "npm:encoding-hex@1.0.0/hex",
-      base64: "npm:encoding-base64@1.0.0/base64",
+      imports: {
+        hex: "npm:encoding-hex@1.0.0/hex",
+        base64: "npm:encoding-base64@1.0.0/base64",
+      },
+      scopes: {},
     });
   });
 
@@ -309,11 +332,18 @@ Deno.test("analyze — npm replacements", async (t) => {
     const src = vendoredRel(base64, "_deps", "TypeScript");
     const target = { kind: "vendored" as const, src, emit: tsToJs(src) };
     assertEquals(analysis.vendoredCode, new Map([[base64, { src: target.src, emit: target.emit }]]));
-    assertEquals(analysis.specifiers.resolve(root, "encoding"), { kind: "npm", bare: "encoding-npm/hex" });
+    assertEquals(analysis.specifiers.resolve(root, "encoding"), {
+      kind: "npm",
+      bare: "encoding-npm/hex",
+      registry: "npm:encoding-npm@1.0.0/hex",
+    });
     assertEquals(analysis.specifiers.resolve(root, "encoding/base64"), target);
     assertEquals(analysis.specifiers.declarationImportMap(), {
-      encoding: "npm:encoding-npm@1.0.0/hex",
-      "encoding/base64": `./${src}`,
+      imports: {
+        encoding: "npm:encoding-npm@1.0.0/hex",
+        "encoding/base64": `./${src}`,
+      },
+      scopes: {},
     });
   });
 
@@ -338,7 +368,11 @@ Deno.test("analyze — npm replacements", async (t) => {
     );
 
     assertEquals([...analysis.vendoredCode.keys()], [parent]);
-    assertEquals(analysis.specifiers.resolve(parent, "shared"), { kind: "npm", bare: "shared-npm" });
+    assertEquals(analysis.specifiers.resolve(parent, "shared"), {
+      kind: "npm",
+      bare: "shared-npm",
+      registry: "npm:shared-npm@1.0.0",
+    });
   });
 
   await t.step("allows version collisions for the same npm package", () => {
@@ -356,8 +390,11 @@ Deno.test("analyze — npm replacements", async (t) => {
     );
 
     assertEquals(analysis.specifiers.declarationImportMap(), {
-      hex: "npm:encoding-npm@^1/hex",
-      base64: "npm:encoding-npm@^2/base64",
+      imports: {
+        hex: "npm:encoding-npm@^1/hex",
+        base64: "npm:encoding-npm@^2/base64",
+      },
+      scopes: {},
     });
     assertEquals(Object.keys(analysis.npmDeps), ["encoding-npm"]);
     assertEquals(["^1", "^2"].includes(analysis.npmDeps["encoding-npm"]), true);
@@ -376,7 +413,11 @@ Deno.test("analyze — npm replacements", async (t) => {
     );
 
     const src = vendoredRel(remote, "_deps", "TypeScript");
-    assertEquals(analysis.specifiers.resolve(root, "@v/v"), { kind: "npm", bare: "valibot" });
+    assertEquals(analysis.specifiers.resolve(root, "@v/v"), {
+      kind: "npm",
+      bare: "valibot",
+      registry: "npm:valibot@1.3.1",
+    });
     assertEquals(analysis.specifiers.resolve(root, direct), { kind: "vendored", src, emit: tsToJs(src) });
   });
 });
@@ -413,10 +454,13 @@ Deno.test("analyze — prototype-key aliases and npm packages remain own entries
   );
   assertEquals(
     analysis.specifiers.declarationImportMap(),
-    Object.fromEntries([
-      ["constructor", "npm:chalk@^5"],
-      ["__proto__", "npm:kleur@^4"],
-    ]),
+    {
+      imports: Object.fromEntries([
+        ["constructor", "npm:chalk@^5"],
+        ["__proto__", "npm:kleur@^4"],
+      ]),
+      scopes: {},
+    },
   );
 });
 

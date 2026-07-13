@@ -301,6 +301,31 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name: "integration — npm alias subpaths preserve declaration types",
+  ignore: !NETWORK,
+  fn: async () => {
+    await withBuild(
+      {
+        "deno.json": JSON.stringify({
+          name: "@fx/npm-subpath",
+          version: "1.0.0",
+          exports: "./src/mod.ts",
+          imports: { zod: "npm:zod@4.2.1" },
+        }),
+        "src/mod.ts": `import { z } from "zod/v4";\nexport const schema = z.literal("typed");\n`,
+      },
+      { outDir: "dist" },
+      async ({ dir, error }) => {
+        assertEquals(error, null, error?.message);
+        const declaration = await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts"));
+        assertStringIncludes(declaration, `import { z } from "zod/v4";`);
+        assertStringIncludes(declaration, `schema: z.ZodLiteral<"typed">`);
+      },
+    );
+  },
+});
+
 Deno.test("integration — unsupported config features fail before replacing prior output", async (t) => {
   for (
     const [name, denoJson] of [

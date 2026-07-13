@@ -108,6 +108,7 @@ The intentionally supported scope is narrower than Deno's module system:
   `import.meta.resolve()`, CommonJS, TypeScript `import = require`, module declarations/augmentations, triple-slash
   references, and JavaScript JSDoc are not.**
 - **Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.**
+- **Generated absolute `file:` imports fail; use explicit type annotations.**
 - **Deno runtime APIs are not shimmed for Node.**
 - **Dependency graph resolution ignores `deno.lock`.**
 - **Only transpiled TypeScript gets source maps; copied JavaScript/MJS maps and mapping directives are omitted.**
