@@ -59,7 +59,7 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  * - Dependency graph resolution ignores `deno.lock`.
  * - Deno runtime APIs are not shimmed for Node.
  * - The `deno.json` import map's `scopes` are not supported.
- * - Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.
+ * - Remote type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are unsupported.
  * - Generated absolute `file:` imports fail; use explicit type annotations.
  * - Specifier rewriting covers static ESM, string-literal runtime `import()`, TypeScript `import()` types, and
  *   string-literal module declarations/augmentations; computed runtime `import()`, `import.meta.resolve()`, CommonJS,

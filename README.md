@@ -107,7 +107,7 @@ The intentionally supported scope is narrower than Deno's module system:
 - **Specifier rewriting covers static ESM, string-literal runtime `import()`, TypeScript `import()` types, and
   string-literal module declarations/augmentations; computed runtime `import()`, `import.meta.resolve()`, CommonJS,
   TypeScript `import = require`, triple-slash references, and JavaScript JSDoc are not covered.**
-- **Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.**
+- **Remote type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are unsupported.**
 - **Generated absolute `file:` imports fail; use explicit type annotations.**
 - **Deno runtime APIs are not shimmed for Node.**
 - **Dependency graph resolution ignores `deno.lock`.**
