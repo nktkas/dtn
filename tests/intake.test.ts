@@ -7,10 +7,11 @@
  */
 
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
+import { join, resolve } from "@std/path";
 import { BuildError } from "../src/errors.ts";
 import { type BuildConfig, intake } from "../src/intake.ts";
 
-const REPO = "/repo";
+const REPO = resolve("repo");
 
 function config(
   denoJson: Partial<BuildConfig["denoJson"]> = {},
@@ -32,10 +33,10 @@ function invalid(config: BuildConfig): BuildError {
 Deno.test("intake — valid config", async (t) => {
   await t.step("normalizes paths, exports, and defaults", () => {
     assertEquals(intake(config(), REPO), {
-      repoRoot: "/repo",
-      outDir: "/repo/dist",
-      codeDir: "/repo/dist/esm",
-      tmpDir: "/repo/dist/.dts-tmp",
+      repoRoot: REPO,
+      outDir: join(REPO, "dist"),
+      codeDir: join(REPO, "dist", "esm"),
+      tmpDir: join(REPO, "dist", ".dts-tmp"),
       name: "@x/lib",
       version: "1.0.0",
       exports: { ".": "./src/mod.ts" },

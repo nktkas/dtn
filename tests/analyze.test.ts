@@ -7,13 +7,18 @@
  */
 
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
+import { join, resolve, toFileUrl } from "@std/path";
 import { analyze } from "../src/analyze.ts";
 import { BuildError } from "../src/errors.ts";
 import type { RawDependency, RawGraph, RawMediaType, RawModule } from "../src/graph.ts";
 import type { Plan } from "../src/intake.ts";
 import { tsToJs, vendoredRel } from "../src/spec.ts";
 
-const REPO = "/repo";
+const REPO = resolve("repo");
+
+function joinRepo(...parts: string[]): string {
+  return join(REPO, ...parts);
+}
 
 function plan(
   exports: Record<string, string> = { ".": "./src/mod.ts" },
@@ -23,9 +28,9 @@ function plan(
 ): Plan {
   return {
     repoRoot: REPO,
-    outDir: "/repo/dist",
-    codeDir: "/repo/dist/esm",
-    tmpDir: "/repo/dist/.dts-tmp",
+    outDir: joinRepo("dist"),
+    codeDir: joinRepo("dist", "esm"),
+    tmpDir: joinRepo("dist", ".dts-tmp"),
     name: "@x/lib",
     version: "1.0.0",
     exports,
@@ -38,7 +43,7 @@ function plan(
 }
 
 function fileUrl(path: string): string {
-  return `file://${REPO}/${path}`;
+  return toFileUrl(joinRepo(path)).href;
 }
 
 function dependency(specifier: string, resolved: string | undefined): RawDependency {
@@ -87,9 +92,9 @@ Deno.test("analyze — representative local, npm, and JSR graph", () => {
     ]),
   );
 
-  assertEquals([...analysis.localFiles].sort(), ["/repo/src/mod.ts", "/repo/src/util.ts"]);
-  assertEquals(analysis.localCopies, ["/repo/src/legacy.js"]);
-  assertEquals(analysis.srcRoot, "/repo/src");
+  assertEquals([...analysis.localFiles].sort(), [joinRepo("src", "mod.ts"), joinRepo("src", "util.ts")]);
+  assertEquals(analysis.localCopies, [joinRepo("src", "legacy.js")]);
+  assertEquals(analysis.srcRoot, joinRepo("src"));
   assertEquals(analysis.npmDeps, { chalk: "^5" });
 
   const src = vendoredRel(remote, "_deps", "TypeScript");
@@ -170,7 +175,7 @@ Deno.test("analyze — supported media", async (t) => {
     );
 
     const remoteSrc = vendoredRel(remote, "_deps", "Mts");
-    assertEquals([...analysis.localFiles].sort(), ["/repo/src/mod.ts", "/repo/src/value.mts"]);
+    assertEquals([...analysis.localFiles].sort(), [joinRepo("src", "mod.ts"), joinRepo("src", "value.mts")]);
     assertEquals(analysis.vendoredCode, new Map([[remote, { src: remoteSrc, emit: tsToJs(remoteSrc) }]]));
     assertEquals(analysis.specifiers.resolve(root, "./value.mts"), {
       kind: "local",
@@ -210,12 +215,12 @@ Deno.test("analyze — supported media", async (t) => {
       ]),
     );
     assertEquals([...analysis.localCopies].sort(), [
-      "/repo/src/a.js",
-      "/repo/src/b.mjs",
-      "/repo/src/data.json",
-      "/repo/src/types.d.cts",
-      "/repo/src/types.d.mts",
-      "/repo/src/types.d.ts",
+      joinRepo("src", "a.js"),
+      joinRepo("src", "b.mjs"),
+      joinRepo("src", "data.json"),
+      joinRepo("src", "types.d.cts"),
+      joinRepo("src", "types.d.mts"),
+      joinRepo("src", "types.d.ts"),
     ]);
   });
 
