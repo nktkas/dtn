@@ -4,15 +4,15 @@
   "license": "MIT",
   "exports": "./mod.ts",
   "imports": {
-    "@deno/cache-dir": "jsr:@deno/cache-dir@^0.27",
-    "@deno/graph": "jsr:@deno/graph@^0.108",
-    "@std/fs": "jsr:@std/fs@^1",
-    "@std/path": "jsr:@std/path@^1",
-    "@jridgewell/sourcemap-codec": "npm:@jridgewell/sourcemap-codec@1.5.5",
-    "oxc-parser": "npm:oxc-parser@^0.134",
-    "oxc-walker": "npm:oxc-walker@^1",
-    "sort-package-json": "npm:sort-package-json@^4",
-    "type-fest": "npm:type-fest@^5"
+    "@deno/cache-dir": "jsr:@deno/cache-dir@^0.27.0",
+    "@deno/graph": "jsr:@deno/graph@^0.110.2",
+    "@std/fs": "jsr:@std/fs@^1.0.24",
+    "@std/path": "jsr:@std/path@^1.1.6",
+    "@jridgewell/sourcemap-codec": "npm:@jridgewell/sourcemap-codec@^1.5.5",
+    "oxc-parser": "npm:oxc-parser@^0.139.0",
+    "oxc-walker": "npm:oxc-walker@^1.0.0",
+    "sort-package-json": "npm:sort-package-json@^4.0.0",
+    "type-fest": "npm:type-fest@^5.8.0"
   },
   "tasks": {
     "test": "deno test -A",
