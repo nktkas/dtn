@@ -86,7 +86,7 @@ export function isRelative(spec: string): boolean {
 export function vendoredRel(
   url: string,
   depsDir: string,
-  media: "TypeScript" | "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts",
+  media: "TypeScript" | "Mts" | "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts",
 ): string {
   const u = new URL(url);
   const segments = portableComponents("h", u.host);
@@ -97,6 +97,7 @@ export function vendoredRel(
 
   let extension = ".js";
   if (media === "TypeScript") extension = ".ts";
+  if (media === "Mts") extension = ".mts";
   if (media === "Mjs") extension = ".mjs";
   if (media === "Dts") extension = ".d.ts";
   if (media === "Dmts") extension = ".d.mts";
@@ -129,11 +130,12 @@ function portableSegment(value: string): string {
 }
 
 /**
- * Swaps a trailing `.ts` for `.js` (a no-op for any other extension).
+ * Swaps a trailing `.ts`/`.mts` for `.js`/`.mjs` (a no-op for any other extension).
  *
- * Matches the literal `.ts`, so `.d.ts` -> `.d.js` — callers must exclude declaration paths.
+ * Matches source extensions literally, so callers must exclude declaration paths.
  */
 export function tsToJs(path: string): string {
+  if (path.endsWith(".mts")) return `${path.slice(0, -4)}.mjs`;
   return path.endsWith(".ts") ? `${path.slice(0, -3)}.js` : path;
 }
 

@@ -21,18 +21,15 @@ import {
 } from "./rewrite.ts";
 import { isRelative, jsToDts, relSpecifier, toPosix, tsToJs } from "./spec.ts";
 
-/** Artifact extensions emitted for each transpiled TypeScript source. */
-const EMITTED_EXTENSIONS = [".js", ".d.ts", ".js.map"];
-
 // =============================================================================
 // Stage 1: vendor
 // =============================================================================
 
 /**
- * Inlines remote dependencies: JavaScript and declarations are copied, while TypeScript is rewritten and transpiled.
+ * Inlines remote dependencies: JavaScript and declarations are copied, while TypeScript/MTS is rewritten and transpiled.
  *
  * @throws {BuildError} `DEPENDENCY_FAILED` when a vendored source cannot be read from the Deno cache.
- * @throws {BuildError} `EMIT_FAILED` when vendored TypeScript cannot be transpiled.
+ * @throws {BuildError} `EMIT_FAILED` when vendored TypeScript/MTS cannot be transpiled.
  */
 export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<void> {
   const { plan, specifiers, vendoredCode, vendoredCopies } = analysis;
@@ -116,7 +113,7 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
 // =============================================================================
 
 /**
- * Type-checks and transpiles local `.ts` sources, retains generated declaration sidecars for copied JavaScript/MJS,
+ * Type-checks and transpiles local `.ts`/`.mts` sources, retains generated declaration sidecars for copied JavaScript/MJS,
  * and copies other supported sources verbatim.
  *
  * @throws {BuildError} `EMIT_FAILED` when the `deno transpile` subprocess exits non-zero.
@@ -137,10 +134,12 @@ export async function transpileStage(analysis: Analysis): Promise<void> {
   });
 
   for (const file of localFiles) {
-    const from = join(out, relative(plan.repoRoot, file)).replace(/\.ts$/, "");
-    const to = join(plan.codeDir, relative(srcRoot, file)).replace(/\.ts$/, "");
-    for (const extension of EMITTED_EXTENSIONS) await fs.moveEmitted(from + extension, to + extension);
-    const mapPath = `${to}.js.map`;
+    const from = join(out, tsToJs(relative(plan.repoRoot, file)));
+    const to = join(plan.codeDir, tsToJs(relative(srcRoot, file)));
+    await fs.moveEmitted(from, to);
+    await fs.moveEmitted(jsToDts(from)!, jsToDts(to)!);
+    await fs.moveEmitted(`${from}.map`, `${to}.map`);
+    const mapPath = `${to}.map`;
     const map = setSourceMapSource(
       await fs.readText(mapPath),
       toPosix(relative(dirname(mapPath), file)),
@@ -202,7 +201,7 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
   }
   for (const { emit } of vendoredCode.values()) {
     vendorEmitted.add(emit);
-    vendorEmitted.add(emit.replace(/\.js$/, ".d.ts"));
+    vendorEmitted.add(jsToDts(emit)!);
   }
   const copiedModules = new Set([
     ...vendoredCopies.values(),
@@ -255,12 +254,12 @@ export async function rewriteStage(analysis: Analysis): Promise<void> {
   }
 }
 
-/** A relative specifier's Node form: `.ts` → `.js`; a `.d.ts` is copied verbatim (no `.js` twin), so it stays. */
+/** A relative specifier's Node form; declarations stay unchanged because they have no runtime twin. */
 function relativeToNode(spec: string): string {
   const suffixAt = spec.search(/[?#]/);
   const path = suffixAt === -1 ? spec : spec.slice(0, suffixAt);
   const suffix = suffixAt === -1 ? "" : spec.slice(suffixAt);
-  return (path.endsWith(".d.ts") ? path : tsToJs(path)) + suffix;
+  return (/\.d\.[cm]?ts$/.test(path) ? path : tsToJs(path)) + suffix;
 }
 
 /** Resolves one emitted specifier through its original graph edge. */

@@ -133,7 +133,7 @@ interface TranspileOptions {
 }
 
 /**
- * Runs `deno transpile`, emitting `.js`, separate source maps, and type-checked `.d.ts` for `files`.
+ * Runs `deno transpile`, emitting JS/MJS, separate source maps, and type-checked declarations for `files`.
  *
  * @throws {BuildError} `EMIT_FAILED` when the `deno transpile` subprocess exits non-zero.
  */

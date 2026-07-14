@@ -11,7 +11,7 @@ import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { copy, exists } from "jsr:@std/fs@1";
 import { dirname, join } from "jsr:@std/path@^1";
 import { build, type BuildConfig, BuildError } from "../mod.ts";
-import { tsToJs, vendoredRel } from "../src/spec.ts";
+import { jsToDts, relSpecifier, tsToJs, vendoredRel } from "../src/spec.ts";
 
 const NETWORK = Deno.env.get("DTN_INTEGRATION") === "1";
 const NPM_COMMAND = Deno.build.os === "windows" ? "npm.cmd" : "npm";
@@ -206,6 +206,88 @@ Deno.test("integration — string-literal runtime imports execute in Node", asyn
       );
     },
   );
+});
+
+Deno.test("integration — local and remote MTS emit Node ESM artifacts", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (request) => {
+    const source = new URL(request.url).pathname === "/remote.mts"
+      ? `export { remote } from "./remote-helper.mts";\n`
+      : `export const remote = 62 as const;\n`;
+    return new Response(source, {
+      headers: { "content-type": "application/typescript" },
+    });
+  });
+  try {
+    const remote = `http://127.0.0.1:${server.addr.port}/remote.mts`;
+    const remoteHelper = `http://127.0.0.1:${server.addr.port}/remote-helper.mts`;
+    await withBuild(
+      {
+        "deno.json": JSON.stringify({ name: "@fx/mts", version: "1.0.0", exports: "./src/mod.ts" }),
+        "src/local-helper.mts": `export const local = 61 as const;\n`,
+        "src/local.mts": `export { local } from "./local-helper.mts";\n`,
+        "src/mod.ts": `export { local } from "./local.mts";\n` +
+          `export { remote } from ${JSON.stringify(remote)};\n`,
+      },
+      { outDir: "dist" },
+      async ({ dir, error }) => {
+        assertEquals(error, null, error?.message);
+        const remoteEmit = tsToJs(vendoredRel(remote, "_deps", "Mts"));
+        const remoteHelperEmit = tsToJs(vendoredRel(remoteHelper, "_deps", "Mts"));
+        for (
+          const file of [
+            "local.mjs",
+            "local.d.mts",
+            "local.mjs.map",
+            "local-helper.mjs",
+            "local-helper.d.mts",
+            "local-helper.mjs.map",
+          ]
+        ) {
+          assert(await exists(join(dir, "dist/esm", file)), `missing ${file}`);
+        }
+        for (
+          const file of [
+            remoteEmit,
+            jsToDts(remoteEmit)!,
+            `${remoteEmit}.map`,
+            remoteHelperEmit,
+            jsToDts(remoteHelperEmit)!,
+            `${remoteHelperEmit}.map`,
+          ]
+        ) {
+          assert(await exists(join(dir, "dist/esm", file)), `missing ${file}`);
+        }
+        assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm/mod.js")), "/mod.mjs");
+        for (const file of ["local.mjs", "local.d.mts"]) {
+          assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm", file)), `from "./local-helper.mjs"`);
+        }
+        const remoteSpecifier = relSpecifier(remoteEmit, remoteHelperEmit);
+        for (const file of [remoteEmit, jsToDts(remoteEmit)!]) {
+          assertStringIncludes(await Deno.readTextFile(join(dir, "dist/esm", file)), `from "${remoteSpecifier}"`);
+        }
+        const localMap = JSON.parse(await Deno.readTextFile(join(dir, "dist/esm/local.mjs.map")));
+        const remoteMap = JSON.parse(await Deno.readTextFile(join(dir, "dist/esm", `${remoteEmit}.map`)));
+        assertEquals(localMap.sources, ["../../src/local.mts"]);
+        assertEquals(remoteMap.sources, [remote]);
+
+        const consumer = join(dir, "consumer");
+        await installPackage(join(dir, "dist"), consumer, "@fx/mts");
+        await Deno.writeTextFile(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
+        await Deno.writeTextFile(
+          join(consumer, "runtime.js"),
+          `import { local, remote } from "@fx/mts";\nconsole.log([local, remote].join(":"));\n`,
+        );
+        assertEquals(await runCommand("node", ["runtime.js"], consumer), "61:62");
+        await checkNodeNext(
+          consumer,
+          `import { local, remote } from "@fx/mts";\n` +
+            `const localExact: 61 = local;\nconst remoteExact: 62 = remote;\nvoid [localExact, remoteExact];\n`,
+        );
+      },
+    );
+  } finally {
+    await server.shutdown();
+  }
 });
 
 Deno.test("integration — local JavaScript, MJS, and declaration dependencies are copied", async () => {

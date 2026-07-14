@@ -152,7 +152,34 @@ Deno.test("analyze — a local query-bearing edge keeps URL identity while shari
   });
 });
 
-Deno.test("analyze — supported copied media", async (t) => {
+Deno.test("analyze — supported media", async (t) => {
+  await t.step("local and remote MTS use MJS artifacts", () => {
+    const root = fileUrl("src/mod.ts");
+    const local = fileUrl("src/value.mts");
+    const remote = "https://example.com/value.mts";
+    const analysis = analyze(
+      plan(),
+      graph([
+        module(root, "TypeScript", [
+          dependency("./value.mts", local),
+          dependency(remote, remote),
+        ]),
+        module(local, "Mts"),
+        module(remote, "Mts"),
+      ]),
+    );
+
+    const remoteSrc = vendoredRel(remote, "_deps", "Mts");
+    assertEquals([...analysis.localFiles].sort(), ["/repo/src/mod.ts", "/repo/src/value.mts"]);
+    assertEquals(analysis.vendoredCode, new Map([[remote, { src: remoteSrc, emit: tsToJs(remoteSrc) }]]));
+    assertEquals(analysis.specifiers.resolve(root, "./value.mts"), {
+      kind: "local",
+      emit: "value.mjs",
+      suffix: "",
+    });
+    assertEquals(analysis.sourceByOutput.get("value.d.mts"), local);
+  });
+
   await t.step("local JavaScript, MJS, JSON, and declaration dependencies are copied", () => {
     const root = fileUrl("src/mod.ts");
     const files = [

@@ -71,7 +71,7 @@ Deno.test("intake — valid config", async (t) => {
 });
 
 Deno.test("intake — invalid config", async (t) => {
-  await t.step("rejects empty, declaration-only, wildcard, and non-TypeScript exports", () => {
+  await t.step("rejects exports outside the explicit runtime .ts contract", () => {
     const invalidExports: Array<Record<string, string>> = [
       {},
       { ".": "" },
@@ -79,6 +79,7 @@ Deno.test("intake — invalid config", async (t) => {
       { "./*": "./src/*.ts" },
       { sub: "./src/sub.ts" },
       { ".": "./src/mod.js" },
+      { ".": "./src/mod.mts" },
       { ".": "./src/mod.tsx" },
     ];
     for (const exports of invalidExports) {

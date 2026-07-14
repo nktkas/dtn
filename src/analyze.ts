@@ -54,11 +54,11 @@ export interface Analysis {
   plan: Plan;
   /** Common ancestor directory of every local source. */
   srcRoot: string;
-  /** Absolute local TypeScript paths passed to `deno transpile`. */
+  /** Absolute local TypeScript/MTS paths passed to `deno transpile`. */
   localFiles: string[];
   /** Absolute local JavaScript/MJS/JSON/declaration paths copied verbatim. */
   localCopies: string[];
-  /** Remote TypeScript URL to staged source and emitted JavaScript paths. */
+  /** Remote TypeScript/MTS URL to staged source and emitted JavaScript/MJS paths. */
   vendoredCode: Map<string, { src: string; emit: string }>;
   /** Remote JavaScript/MJS/declaration URL to copied package path. */
   vendoredCopies: Map<string, string>;
@@ -166,7 +166,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
       const url = new URL(module.specifier);
       targets.set(module.specifier, { kind: "local", emit, suffix: url.search + url.hash });
       sourceByOutput.set(emit, module.specifier);
-      if (fate.kind === "transpile") sourceByOutput.set(emit.replace(/\.js$/, ".d.ts"), module.specifier);
+      if (fate.kind === "transpile") sourceByOutput.set(jsToDts(emit)!, module.specifier);
       else {
         const declaration = jsToDts(emit);
         if (declaration !== null && !sourceByOutput.has(declaration)) {
@@ -179,7 +179,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
       const target = { kind: "vendored", src: fate.src, emit: fate.emit } as const;
       targets.set(module.specifier, target);
       sourceByOutput.set(fate.emit, module.specifier);
-      sourceByOutput.set(fate.emit.replace(/\.js$/, ".d.ts"), module.specifier);
+      sourceByOutput.set(jsToDts(fate.emit)!, module.specifier);
       continue;
     }
     targets.set(module.specifier, { kind: "vendored", src: fate.rel, emit: fate.rel });
@@ -227,7 +227,7 @@ function fateOf(module: RawModule, depsDir: string): Fate {
     if (module.error !== undefined) {
       throw new BuildError("DEPENDENCY_FAILED", module.error, { subject: path });
     }
-    if (media === "TypeScript") return { kind: "transpile", path };
+    if (media === "TypeScript" || media === "Mts") return { kind: "transpile", path };
     if (media !== undefined && COPY_MEDIA.has(media)) return { kind: "copy", path };
     throw new BuildError("UNSUPPORTED_MODULE", `local module has unsupported media type ${media}`, { subject: path });
   }
@@ -241,7 +241,7 @@ function fateOf(module: RawModule, depsDir: string): Fate {
   if (module.error !== undefined) {
     throw new BuildError("DEPENDENCY_FAILED", module.error, { subject: module.specifier });
   }
-  if (media === "TypeScript") {
+  if (media === "TypeScript" || media === "Mts") {
     const src = vendoredRel(module.specifier, depsDir, media);
     return { kind: "vendorCode", url: module.specifier, src, emit: tsToJs(src) };
   }
