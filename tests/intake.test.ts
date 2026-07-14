@@ -1,13 +1,20 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for build-config validation and normalization.
+ *
+ * @module
+ */
+
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { BuildError } from "../src/errors.ts";
 import { type BuildConfig, intake } from "../src/intake.ts";
 
 const REPO = "/repo";
 
-function cfg(
+function config(
   denoJson: Partial<BuildConfig["denoJson"]> = {},
-  rest: Omit<Partial<BuildConfig>, "deno"> = {},
+  rest: Omit<Partial<BuildConfig>, "denoJson"> = {},
 ): BuildConfig {
   return {
     outDir: "dist",
@@ -16,14 +23,15 @@ function cfg(
   };
 }
 
-function throwsWithCode(fn: () => unknown, code: string): void {
-  const e = assertThrows(fn, BuildError);
-  assertEquals((e as BuildError).code, code);
+function invalid(config: BuildConfig): BuildError {
+  const error = assertThrows(() => intake(config, REPO), BuildError);
+  assertEquals(error.code, "INVALID_CONFIG");
+  return error;
 }
 
-Deno.test("intake — valid input produces a Plan", async (t) => {
-  await t.step("string exports normalize to a '.' entry, paths resolve, defaults fill in", () => {
-    assertEquals(intake(cfg(), REPO), {
+Deno.test("intake — valid config", async (t) => {
+  await t.step("normalizes paths, exports, and defaults", () => {
+    assertEquals(intake(config(), REPO), {
       repoRoot: "/repo",
       outDir: "/repo/dist",
       codeDir: "/repo/dist/esm",
@@ -35,77 +43,61 @@ Deno.test("intake — valid input produces a Plan", async (t) => {
       npmReplacements: {},
       packageJson: {},
       copyFiles: [],
-      sourceMap: "separate",
       depsDir: "_deps",
     });
   });
 
-  await t.step("map exports are kept as-is", () => {
-    const plan = intake(cfg({ exports: { ".": "./src/mod.ts", "./sub": "./src/sub.ts" } }), REPO);
-    assertEquals(plan.exports, { ".": "./src/mod.ts", "./sub": "./src/sub.ts" });
-  });
-
-  await t.step("a .d.ts entry point is accepted", () => {
-    const plan = intake(cfg({ exports: { ".": "./src/types.d.ts" } }), REPO);
-    assertEquals(plan.exports, { ".": "./src/types.d.ts" });
-  });
-
-  await t.step("imports, packageJson, copyFiles pass through", () => {
+  await t.step("keeps explicit exports and registry aliases", () => {
     const plan = intake(
-      cfg({ imports: { chalk: "npm:chalk@^5" } }, { packageJson: { license: "MIT" }, copyFiles: ["README.md"] }),
+      config({
+        exports: { ".": "./src/mod.ts", "./sub": "./src/sub.ts" },
+        imports: { "@std/encoding": "jsr:@std/encoding@^1", chalk: "npm:chalk@^5" },
+      }),
       REPO,
     );
-    assertEquals(plan.imports, { chalk: "npm:chalk@^5" });
+    assertEquals(plan.exports, { ".": "./src/mod.ts", "./sub": "./src/sub.ts" });
+    assertEquals(plan.imports, { "@std/encoding": "jsr:@std/encoding@^1", chalk: "npm:chalk@^5" });
+  });
+
+  await t.step("keeps merge metadata, copied files, and a custom vendor directory", () => {
+    const plan = intake(
+      config({}, { packageJson: { license: "MIT" }, copyFiles: ["README.md"], depsDir: "vendor" }),
+      REPO,
+    );
     assertEquals(plan.packageJson, { license: "MIT" });
     assertEquals(plan.copyFiles, ["README.md"]);
-  });
-
-  await t.step("a valid npmReplacements alias (jsr or npm target) is accepted", () => {
-    const plan = intake(
-      cfg(
-        { imports: { "@valibot/valibot": "jsr:@valibot/valibot@1", chalk: "npm:chalk@^5" } },
-        { npmReplacements: { "@valibot/valibot": "valibot", chalk: "chalk" } },
-      ),
-      REPO,
-    );
-    assertEquals(plan.npmReplacements, { "@valibot/valibot": "valibot", chalk: "chalk" });
+    assertEquals(plan.depsDir, "vendor");
   });
 });
 
-Deno.test("intake — contract violations throw the documented BuildError", async (t) => {
-  await t.step("INVALID_EXPORTS: empty exports map", () => {
-    throwsWithCode(() => intake(cfg({ exports: {} }), REPO), "INVALID_EXPORTS");
+Deno.test("intake — invalid config", async (t) => {
+  await t.step("rejects exports outside the explicit runtime .ts contract", () => {
+    const invalidExports: Array<Record<string, string>> = [
+      {},
+      { ".": "" },
+      { ".": "./src/types.d.ts" },
+      { "./*": "./src/*.ts" },
+      { sub: "./src/sub.ts" },
+      { ".": "./src/mod.js" },
+      { ".": "./src/mod.mts" },
+      { ".": "./src/mod.tsx" },
+    ];
+    for (const exports of invalidExports) {
+      invalid(config({ exports }));
+    }
   });
 
-  await t.step("INVALID_EXPORTS: empty-string entry", () => {
-    throwsWithCode(() => intake(cfg({ exports: { ".": "" } }), REPO), "INVALID_EXPORTS");
+  await t.step("rejects local and hosted import-map targets", () => {
+    invalid(config({ imports: { "$util": "./src/util.ts" } }));
+    invalid(config({ imports: { remote: "https://example.com/mod.ts" } }));
   });
 
-  await t.step("INVALID_EXPORTS: a non-.ts entry point (.js)", () => {
-    throwsWithCode(() => intake(cfg({ exports: { ".": "./src/mod.js" } }), REPO), "INVALID_EXPORTS");
+  await t.step("rejects a mismatched prefix mapping", () => {
+    invalid(config({ imports: { "@scope/": "jsr:@scope/pkg@1" } }));
   });
 
-  await t.step("INVALID_EXPORTS: a non-.ts entry point (.json)", () => {
-    throwsWithCode(() => intake(cfg({ exports: { ".": "./data.json" } }), REPO), "INVALID_EXPORTS");
-  });
-
-  await t.step("INVALID_EXPORTS: an entry that only contains '.ts' as a non-suffix substring", () => {
-    // The check is endsWith('.ts'), not includes('.ts'): a path where '.ts' is not the extension is rejected.
-    throwsWithCode(() => intake(cfg({ exports: { ".": "./src/mod.ts.js" } }), REPO), "INVALID_EXPORTS");
-    throwsWithCode(() => intake(cfg({ exports: { ".": "./src/a.tsx" } }), REPO), "INVALID_EXPORTS");
-  });
-
-  await t.step("REPLACEMENT_ALIAS_UNKNOWN: alias absent from the import map", () => {
-    throwsWithCode(
-      () => intake(cfg({ imports: {} }, { npmReplacements: { "@v/v": "valibot" } }), REPO),
-      "REPLACEMENT_ALIAS_UNKNOWN",
-    );
-  });
-
-  await t.step("REPLACEMENT_TARGET_INVALID: alias maps to neither jsr nor npm", () => {
-    throwsWithCode(
-      () => intake(cfg({ imports: { x: "https://example.com/x.ts" } }, { npmReplacements: { x: "ex" } }), REPO),
-      "REPLACEMENT_TARGET_INVALID",
-    );
+  await t.step("rejects an unknown replacement alias and malformed package name", () => {
+    invalid(config({ imports: {} }, { npmReplacements: { x: "pkg" } }));
+    invalid(config({ imports: { x: "jsr:@scope/pkg@1" } }, { npmReplacements: { x: "" } }));
   });
 });

@@ -1,155 +1,293 @@
 /**
  * The four effectful stage drivers of the build pipeline: vendor, transpile, rewrite, and package.
  *
- * Each reads the {@linkcode Analysis} and drives the file-system primitives and `deno transpile`; the decisions
- * live in the pure core.
+ * Each stage reads the {@linkcode Analysis} and drives file-system primitives or `deno transpile`, while decisions stay in the pure core.
  *
  * @module
  */
 
-import { basename, join, relative } from "@std/path";
+import { basename, dirname, join, relative } from "@std/path";
 import type { Analysis, SpecifierIndex } from "./analyze.ts";
+import { BuildError } from "./errors.ts";
 import * as fs from "./fs.ts";
 import type { RawGraph } from "./graph.ts";
 import { planPackageJson } from "./pkg.ts";
-import { restoreJsonAttributes, rewriteSpecifiers, sourceMappingComment } from "./rewrite.ts";
-import { isRelative, jsToTs, relSpecifier, toPosix, tsToJs } from "./spec.ts";
+import {
+  restoreSourceMapSource,
+  rewriteSpecifiers,
+  setSourceMapSource,
+  sourceMappingComment,
+  updateGeneratedSourceMap,
+} from "./rewrite.ts";
+import { isRelative, jsToDts, relSpecifier, toPosix, tsToJs } from "./spec.ts";
 
-// ── Stage 1: vendor ──────────────────────────────────────────────────────────
+// =============================================================================
+// Stage 1: vendor
+// =============================================================================
 
 /**
- * Inlines vendored dependencies: byte assets copied as-is, code rewritten and transpiled, under the code root.
+ * Inlines remote dependencies: JavaScript, JSON, and declarations are copied, while TypeScript/MTS is rewritten and transpiled.
  *
- * @throws {BuildError} `MODULE_LOAD_FAILED` when a vendored source cannot be read from the Deno cache.
- * @throws {BuildError} `TRANSPILE_FAILED` when the `deno transpile` subprocess exits non-zero on the vendored sources.
+ * @throws {BuildError} `DEPENDENCY_FAILED` when a vendored source cannot be read from the Deno cache.
+ * @throws {BuildError} `EMIT_FAILED` when vendored TypeScript/MTS cannot be transpiled.
  */
 export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<void> {
-  const { plan, specifiers, vendoredCode, vendoredCopies, vendoredAssets } = analysis;
+  const { plan, specifiers, vendoredCode, vendoredCopies } = analysis;
   const decoder = new TextDecoder();
 
-  // Rewrites a vendored module's specifiers to their package form: a sibling vendored dep by a relative path (a
-  // transpiled `.ts` is referenced as `.ts`, turned into `.js` by the later pass; a copied `.js` stays `.js`), an npm
-  // dependency by its bare name.
-  const rewriteVendored = (source: string, file: string, rel: string): string =>
-    rewriteSpecifiers(source, file, (spec) => {
-      if (isRelative(spec)) return spec;
-      const target = specifiers.resolve(spec);
+  // Every vendored edge initially points at staged source; the output pass changes only the known `.ts` suffix,
+  // while declarations resolve the scratch tree without network access.
+  const rewriteVendored = (source: string, url: string, rel: string) =>
+    rewriteSpecifiers(source, rel, (spec) => {
+      const target = specifiers.resolve(url, spec);
       if (target === null) return spec;
       if (target.kind === "npm") return target.bare;
-      return relSpecifier(rel, target.kind === "vendored" ? jsToTs(target.rel) : target.rel);
+      return relSpecifier(rel, target.kind === "vendored" ? target.src : target.emit) +
+        (target.kind === "local" ? target.suffix : "");
     });
 
-  // Byte assets go in first — into both the package (runtime) and the scratch tree. A declaration pass resolves a
-  // vendored asset through an import map that points into `tmpDir`, so the asset must sit there too, or code that
-  // imports it loses its type (degraded to `any`). Staged before the transpile so vendored code is checked against it.
-  for (const [url, rel] of vendoredAssets) {
-    const bytes = await graph.readSource(url);
-    await fs.writeBytes(join(plan.codeDir, rel), bytes);
-    await fs.writeBytes(join(plan.tmpDir, rel), bytes);
-  }
-
-  // Remote JavaScript: inlined verbatim (already JS — nothing to transpile), only its specifiers rewritten. Written to
-  // the package and the scratch tree alike, so the declaration passes resolve it there exactly as they do an asset.
+  // The shipped copy stays clean; only the scratch copy receives @ts-nocheck for a consumer using checkJs.
   for (const [url, rel] of vendoredCopies) {
-    const rewritten = rewriteVendored(decoder.decode(await graph.readSource(url)), rel, rel);
+    const source = await graph.readSource(url);
+    // JSON has no specifiers, and the scratch @ts-nocheck comment would make it invalid.
+    if (rel.endsWith(".json")) {
+      await fs.writeBytes(join(plan.codeDir, rel), source);
+      await fs.writeBytes(join(plan.tmpDir, rel), source);
+      continue;
+    }
+    const rewritten = rewriteVendored(decoder.decode(source), url, rel).code;
     await fs.writeText(join(plan.codeDir, rel), rewritten);
-    await fs.writeText(join(plan.tmpDir, rel), rewritten);
+    // A hashbang must stay at byte zero; the scratch-only directive follows it.
+    const hashbang = rewritten.match(/^#![^\r\n\u2028\u2029]*(?:\r\n|[\n\r\u2028\u2029]|$)/)?.[0] ?? "";
+    const separator = hashbang !== "" && !/[\r\n\u2028\u2029]$/.test(hashbang) ? "\n" : "";
+    await fs.writeText(
+      join(plan.tmpDir, rel),
+      `${hashbang}${separator}// @ts-nocheck\n${rewritten.slice(hashbang.length)}`,
+    );
   }
 
   const vendorFiles: string[] = [];
-  for (const [url, rel] of vendoredCode) {
-    const relTs = jsToTs(rel);
-    const rewritten = rewriteVendored(decoder.decode(await graph.readSource(url)), relTs, rel);
-    await fs.writeText(join(plan.tmpDir, relTs), rewritten);
-    vendorFiles.push(relTs);
+  const sourceRewrites = new Map<
+    string,
+    { original: string; rewritten: string; edits: ReturnType<typeof rewriteSpecifiers>["edits"] }
+  >();
+  for (const [url, { src }] of vendoredCode) {
+    const original = decoder.decode(await graph.readSource(url));
+    const rewritten = rewriteVendored(original, url, src);
+    await fs.writeText(join(plan.tmpDir, src), rewritten.code);
+    sourceRewrites.set(url, { original, rewritten: rewritten.code, edits: rewritten.edits });
+    vendorFiles.push(src);
   }
 
   if (vendorFiles.length > 0) {
     const importMap = join(plan.tmpDir, "vendor-importmap.json");
-    await fs.writeText(importMap, JSON.stringify({ imports: specifiers.vendorImportMap() }));
+    await fs.writeText(importMap, JSON.stringify(specifiers.vendorImportMap()));
     await fs.transpile({
       importMap,
       files: vendorFiles,
       outDir: plan.codeDir,
       cwd: plan.tmpDir,
-      sourceMap: plan.sourceMap,
+      // tmpDir sits inside the consumer's tree,
+      // so disable ancestor discovery to isolate third-party code from the consumer's compilerOptions.
+      config: "none",
     });
+
+    for (const [url, { emit }] of vendoredCode) {
+      const source = sourceRewrites.get(url)!;
+      const mapPath = join(plan.codeDir, `${emit}.map`);
+      const map = restoreSourceMapSource(
+        await fs.readText(mapPath),
+        source.rewritten,
+        source.original,
+        source.edits,
+        url,
+        mapPath,
+      );
+      await fs.writeText(mapPath, map);
+    }
+
+    // The local declaration pass reads these sources for their types.
+    // @ts-nocheck prevents consumer compilerOptions from re-checking code that Deno treats as a remote module.
+    for (const relTs of vendorFiles) {
+      const path = join(plan.tmpDir, relTs);
+      await fs.writeText(path, `// @ts-nocheck\n${await fs.readText(path)}`);
+    }
   }
 }
 
-// ── Stage 2: transpile ───────────────────────────────────────────────────────
+// =============================================================================
+// Stage 2: transpile
+// =============================================================================
 
 /**
- * Type-checks and transpiles local `.ts` sources, mirroring the emitted `.js`/`.js.map`/`.d.ts` under the code root;
- * non-`.ts` sources are copied verbatim.
+ * Type-checks and transpiles local `.ts`/`.mts` sources, retains generated declaration sidecars for copied JavaScript/MJS,
+ * and copies other supported sources verbatim.
  *
- * @throws {BuildError} `TRANSPILE_FAILED` when the `deno transpile` subprocess exits non-zero (e.g. a type error).
+ * @throws {BuildError} `EMIT_FAILED` when the `deno transpile` subprocess exits non-zero.
  */
 export async function transpileStage(analysis: Analysis): Promise<void> {
-  const { plan, specifiers, localFiles, localCopies, srcRoot } = analysis;
+  const { plan, specifiers, localFiles, localCopies, srcRoot, vendoredCopies } = analysis;
 
-  // A types-only project has no `.ts` to transpile; `deno transpile` with zero files fails, so skip the pass.
-  if (localFiles.length > 0) {
-    const importMap = join(plan.tmpDir, "importmap.json");
-    await fs.writeText(importMap, JSON.stringify({ imports: specifiers.declarationImportMap() }));
-    const out = join(plan.tmpDir, "out");
-    await fs.transpile({
-      importMap,
-      files: localFiles.map((f) => toPosix(relative(plan.repoRoot, f))),
-      outDir: out,
-      cwd: plan.repoRoot,
-      sourceMap: plan.sourceMap,
-    });
+  const importMap = join(plan.tmpDir, "importmap.json");
+  await fs.writeText(importMap, JSON.stringify(specifiers.declarationImportMap()));
+  const out = join(plan.tmpDir, "out");
+  await fs.transpile({
+    importMap,
+    files: localFiles.map((file) => toPosix(relative(plan.repoRoot, file))),
+    outDir: out,
+    cwd: plan.repoRoot,
+    // The project's own compilerOptions apply to the author's sources, exactly as deno check would.
+    config: "inherit",
+  });
 
-    // Mirror each source's emitted `.js` / `.js.map` / `.d.ts` under the code root (the rewrite stage fixes them).
-    for (const file of localFiles) {
-      const from = join(out, relative(plan.repoRoot, file)).replace(/\.ts$/, "");
-      const to = join(plan.codeDir, relative(srcRoot, file)).replace(/\.ts$/, "");
-      for (const ext of [".js", ".js.map", ".d.ts"]) await fs.moveIfExists(from + ext, to + ext);
-    }
+  for (const file of localFiles) {
+    const from = join(out, tsToJs(relative(plan.repoRoot, file)));
+    const to = join(plan.codeDir, tsToJs(relative(srcRoot, file)));
+    await fs.moveEmitted(from, to);
+    await fs.moveEmitted(jsToDts(from)!, jsToDts(to)!);
+    await fs.moveEmitted(`${from}.map`, `${to}.map`);
+    const mapPath = `${to}.map`;
+    const map = setSourceMapSource(
+      await fs.readText(mapPath),
+      toPosix(relative(dirname(mapPath), file)),
+      mapPath,
+    );
+    await fs.writeText(mapPath, map);
   }
 
   // Non-`.ts` local sources go in verbatim; the rewrite stage still adjusts their import specifiers.
   for (const file of localCopies) {
-    await fs.copyFile(file, join(plan.codeDir, relative(srcRoot, file)));
+    const rel = relative(srcRoot, file);
+    await fs.copyFile(file, join(plan.codeDir, rel));
+  }
+
+  for (const file of localCopies) {
+    const rel = relative(srcRoot, file);
+    const declaration = jsToDts(rel);
+    if (declaration === null) continue;
+    const destination = join(plan.codeDir, declaration);
+    if (await fs.exists(destination)) continue;
+    const source = join(out, relative(plan.repoRoot, file));
+    const sidecar = jsToDts(source)!;
+    // HACK:
+    // Deno emits a query-only JavaScript/MJS declaration with its source extension.
+    const emitted = await fs.exists(sidecar) ? sidecar : source;
+    await fs.moveEmitted(emitted, destination);
+    if (emitted === source) await fs.stripGeneratedAmdDirective(destination);
+  }
+
+  for (const rel of vendoredCopies.values()) {
+    const declaration = jsToDts(rel);
+    if (declaration === null) continue;
+    const destination = join(plan.codeDir, declaration);
+    if (await fs.exists(destination)) continue;
+    const staged = join(plan.tmpDir, rel);
+    await fs.moveEmitted(jsToDts(join(out, relative(plan.repoRoot, staged)))!, destination);
   }
 }
 
-// ── Stage 3: rewrite ─────────────────────────────────────────────────────────
+// =============================================================================
+// Stage 3: rewrite
+// =============================================================================
 
-/** Rewrites every emitted specifier to its Node form and applies the declaration and source-map fixups. */
+/**
+ * Rewrites every emitted static specifier to its Node form and updates separate source maps.
+ *
+ * @throws {BuildError} `EMIT_FAILED` when an emitted module or source map cannot be rewritten.
+ */
 export async function rewriteStage(analysis: Analysis): Promise<void> {
-  const { plan, specifiers } = analysis;
+  const { plan, specifiers, localCopies, srcRoot, vendoredCode, vendoredCopies, sourceByOutput } = analysis;
 
-  for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".cjs", ".ts"])) {
+  // vendorStage already finalized these files' non-relative specifiers.
+  // Re-resolving them could let a same-named import-map alias capture the output; only the deferred `.ts` → `.js` flip remains.
+  const vendorEmitted = new Set<string>();
+  for (const rel of vendoredCopies.values()) {
+    vendorEmitted.add(rel);
+    const declaration = jsToDts(rel);
+    if (declaration !== null) vendorEmitted.add(declaration);
+  }
+  for (const { emit } of vendoredCode.values()) {
+    vendorEmitted.add(emit);
+    vendorEmitted.add(jsToDts(emit)!);
+  }
+  const copiedModules = new Set([
+    ...vendoredCopies.values(),
+    ...localCopies.map((file) => toPosix(relative(srcRoot, file))),
+  ]);
+
+  for await (const path of fs.walkFiles(plan.codeDir, [".js", ".mjs", ".ts", ".mts", ".cts"])) {
     const fromRel = toPosix(relative(plan.codeDir, path));
-    const isDts = path.endsWith(".d.ts");
+    const isDts = /\.d\.[cm]?ts$/.test(path);
 
-    let code = await fs.readText(path);
-    code = rewriteSpecifiers(code, path, (spec) => rewriteForNode(spec, fromRel, specifiers));
-    if (isDts) code = restoreJsonAttributes(code);
+    const source = await fs.readText(path);
+    const referrer = sourceByOutput.get(fromRel);
+    const rewrite = vendorEmitted.has(fromRel)
+      ? (specifier: string) => isRelative(specifier) ? relativeToNode(specifier) : specifier
+      : (specifier: string) =>
+        referrer === undefined ? specifier : rewriteForNode(specifier, referrer, fromRel, specifiers, isDts);
+    const rewritten = rewriteSpecifiers(
+      source,
+      path,
+      (specifier) => {
+        const target = rewrite(specifier);
+        if (isDts && !copiedModules.has(fromRel) && target.startsWith("file:")) {
+          throw new BuildError(
+            "EMIT_FAILED",
+            "emitted declaration contains an absolute file specifier; add an explicit type annotation",
+            { subject: target },
+          );
+        }
+        return target;
+      },
+      !isDts && copiedModules.has(fromRel),
+    );
 
-    // `deno transpile` omits the `sourceMappingURL` comment for a separate map; add it.
-    if (!isDts && plan.sourceMap === "separate") {
+    let code = rewritten.code;
+    if (!isDts) {
       const mapPath = `${path}.map`;
-      if (await fs.exists(mapPath)) code += sourceMappingComment(basename(mapPath));
+      if (await fs.exists(mapPath)) {
+        const map = updateGeneratedSourceMap(
+          await fs.readText(mapPath),
+          source,
+          code,
+          rewritten.edits,
+          mapPath,
+        );
+        await fs.writeText(mapPath, map);
+        code += sourceMappingComment(basename(mapPath));
+      }
     }
     await fs.writeText(path, code);
   }
 }
 
-/** One specifier → its Node form: relative `.ts`→`.js`, vendored → relative path, external → npm name. */
-function rewriteForNode(spec: string, fromRel: string, specifiers: SpecifierIndex): string {
-  // A relative `.d.ts` is copied verbatim (no `.js` twin), so keep it — rewriting to `.d.js` would dangle.
-  if (isRelative(spec)) return spec.endsWith(".d.ts") ? spec : tsToJs(spec);
-  const target = specifiers.resolve(spec);
-  if (target === null) return spec; // `node:` builtins and already-bare externals
-  // A vendored dep and a local-file alias both resolve to a package file addressed by a relative path; only an npm
-  // external stays a bare name.
-  return target.kind === "npm" ? target.bare : relSpecifier(fromRel, target.rel);
+/** A relative specifier's Node form; declarations stay unchanged because they have no runtime twin. */
+function relativeToNode(spec: string): string {
+  const suffixAt = spec.search(/[?#]/);
+  const path = suffixAt === -1 ? spec : spec.slice(0, suffixAt);
+  const suffix = suffixAt === -1 ? "" : spec.slice(suffixAt);
+  return (/\.d\.[cm]?ts$/.test(path) ? path : tsToJs(path)) + suffix;
 }
 
-// ── Stage 4: package ─────────────────────────────────────────────────────────
+/** Resolves one emitted specifier through its original graph edge. */
+function rewriteForNode(
+  spec: string,
+  referrer: string,
+  fromRel: string,
+  specifiers: SpecifierIndex,
+  isDts: boolean,
+): string {
+  const target = specifiers.resolve(referrer, spec);
+  if (target === null) return spec; // `node:` builtins and already-bare externals
+  if (target.kind === "npm") return target.bare;
+  // TypeScript NodeNext cannot resolve URL suffixes in declaration imports.
+  const suffix = target.kind === "local" && !isDts ? target.suffix : "";
+  return relSpecifier(fromRel, target.emit) + suffix;
+}
+
+// =============================================================================
+// Stage 4: package
+// =============================================================================
 
 /** Writes the generated `package.json` and copies the author's auxiliary files into the package root. */
 export async function packageStage(analysis: Analysis): Promise<void> {

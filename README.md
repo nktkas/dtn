@@ -5,7 +5,7 @@
 
 Deno to Node — build a Deno project into a Node-compatible project (no bundling).
 
-## Install (Deno 2.8+)
+## Install (Deno 2.9+)
 
 ```
 deno add jsr:@nktkas/dtn
@@ -38,31 +38,25 @@ await build({
 // ├── package.json
 // └── esm/
 //     ├── mod.js  (+ mod.js.map, mod.d.ts)
-//     ├── _deps/jsr.io/@std/encoding/1.0.0/hex.js  (+ .js.map, .d.ts)
+//     ├── _deps/.../mod.js  (+ mod.js.map, mod.d.ts)
 //     └── ...     other local files related to mod.js
 ```
-
-## CLI
-
-dtn ships a CLI that reads `./deno.json` and takes the rest as flags (`--help` lists every flag):
-
-```sh
-deno run -A jsr:@nktkas/dtn/cli --out-dir dist --replace @valibot/valibot=valibot --copy README.md --copy LICENSE
-```
-
-The `packageJson` config field has no flag — use the [programmatic API](#usage) for it.
 
 ## Config
 
 ```ts
 interface BuildConfig {
-  /** Output directory, relative to the current working directory. */
+  /** Output directory, relative to the project root. */
   outDir: string;
+  /** Project root against which relative paths resolve. @default Deno.cwd() */
+  root?: string;
   /** Package facts from `deno.json`. */
   denoJson: {
     name: string;
     version: string;
+    /** Explicit runtime `.ts` entry or subpath map; wildcards and `.d.ts`-only entries are unsupported. */
     exports: string | Record<string, string>;
+    /** Aliases targeting `jsr:` or `npm:` packages. */
     imports?: Record<string, string>;
   };
   /**
@@ -70,15 +64,10 @@ interface BuildConfig {
    * vendoring it, given as `"name"` or `"name@version"`; an omitted version is taken from that specifier.
    */
   npmReplacements?: Record<string, string>;
-  /**
-   * Extra `package.json` fields to merge in. The engine always sets `name`, `version`, `type`, `exports`, the root
-   * `main`/`types`, and `dependencies` itself, overwriting any value you pass for those keys.
-   */
+  /** Fields merged into the generated `package.json`; dtn-generated values take precedence. */
   packageJson?: PackageJson;
   /** Files copied verbatim into the package root. */
   copyFiles?: string[];
-  /** Source-map mode: `"separate"` (a `.js.map` beside each `.js`), `"inline"` (embedded), or `"none"`. @default "separate" */
-  sourceMap?: "separate" | "inline" | "none";
   /** Directory under the package code root that holds inlined (vendored) dependencies. @default "_deps" */
   depsDir?: string;
 }
@@ -94,29 +83,36 @@ import { build, BuildError } from "@nktkas/dtn";
 try {
   await build(config);
 } catch (e) {
-  if (e instanceof BuildError && e.code === "REPLACEMENT_ALIAS_UNKNOWN") { /* ... */ }
+  if (e instanceof BuildError && e.code === "INVALID_CONFIG") { /* ... */ }
 }
 ```
 
-| `code`                            | Raised when                                                                                                       |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `INVALID_EXPORTS`                 | `deno.exports` is empty, an entry is not a `.ts`/`.d.ts` source, or a wildcard export has no single matching `*`. |
-| `REPLACEMENT_ALIAS_UNKNOWN`       | An `npmReplacements` alias is absent from `deno.imports`.                                                         |
-| `REPLACEMENT_TARGET_INVALID`      | A replaced alias maps to neither a `jsr:` nor an `npm:` specifier.                                                |
-| `REPLACEMENT_DIRECT_IMPORT`       | Local code imports a replaced package via its raw specifier instead of its import-map alias.                      |
-| `UNSUPPORTED_LOCAL_SOURCE`        | A local source is not a `.ts`/`.js`/`.mjs`/`.cjs`/`.json`/`.d.ts`/`.wasm` file.                                   |
-| `UNSUPPORTED_VENDORED_DEPENDENCY` | A vendored dependency cannot be inlined (an unsupported media type, or a hostless URL like `data:`).              |
-| `UNRESOLVED_SPECIFIER`            | A specifier resolves to neither a vendored file nor an npm package.                                               |
-| `MODULE_LOAD_FAILED`              | A module's source cannot be read from the Deno cache.                                                             |
-| `TRANSPILE_FAILED`                | The `deno transpile` subprocess fails (e.g. a type error in the source).                                          |
+| `code`               | Raised when                                                                    |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `INVALID_CONFIG`     | Exports, registry aliases, or npm replacements violate the supported contract. |
+| `UNSUPPORTED_MODULE` | A reachable module has an unsupported media type.                              |
+| `DEPENDENCY_FAILED`  | Loading/resolution fails or npm requirement strings differ for one package.    |
+| `EMIT_FAILED`        | Transpilation, expected artifacts, rewriting, or source maps fail.             |
+| `BUILD_FAILED`       | Another platform or library operation fails.                                   |
+
+The original platform or library error is available through `error.cause` when one exists.
 
 ## Limitations
 
-These valid-Deno cases are unsupported — not detected, with undefined output:
+The intentionally supported scope is narrower than Deno's module system:
 
-- **Import-map `scopes` are not supported.**
-- **Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.**
-- **Two remote URLs differing only by a query string collide on one vendored path.**
+- **Import-map `scopes` are unsupported; aliases may target only `jsr:` or `npm:` packages.**
+- **Local and vendored remote modules support `.ts`, `.mts`, `.js`, `.mjs`, `.json`, `.d.ts`, `.d.mts`, and `.d.cts`.
+  TSX, JSX, CommonJS, and Wasm are unsupported.**
+- **Specifier rewriting covers static ESM, string-literal runtime `import()`, TypeScript `import()` types, and
+  string-literal module declarations/augmentations; computed runtime `import()`, `import.meta.resolve()`, CommonJS,
+  TypeScript `import = require`, triple-slash references, and JavaScript JSDoc are not covered.**
+- **Remote type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are unsupported.**
+- **Generated absolute `file:` imports fail; use explicit type annotations.**
+- **Deno runtime APIs are not shimmed for Node.**
+- **Dependency graph resolution ignores `deno.lock`.**
+- **Only transpiled TypeScript gets source maps; copied JavaScript/MJS maps and mapping directives are omitted.**
+- **Validation and graph analysis preserve existing output; emission failures may leave partial output.**
 
 ## Alternatives
 

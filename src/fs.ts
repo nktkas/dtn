@@ -10,7 +10,15 @@ import { BuildError } from "./errors.ts";
 
 export { exists };
 
-// ── File system ──────────────────────────────────────────────────────────────
+const DECLARATION_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts"];
+const GENERATED_AMD_DIRECTIVE =
+  /^\/\/\/ <amd-module name="file:\/\/\/[^"\r\n\u2028\u2029]+" \/>[ \t]*(?:\r\n|[\n\r\u2028\u2029]|$)/;
+const LINE_TERMINATOR = /[\r\n\u2028\u2029]/;
+const WHITESPACE = /\s/u;
+
+// =============================================================================
+// File system
+// =============================================================================
 
 /** Removes a path recursively, ignoring only "not found". */
 export async function rmrf(path: string): Promise<void> {
@@ -38,11 +46,55 @@ export function readText(path: string): Promise<string> {
   return Deno.readTextFile(path);
 }
 
-/** Moves a file into place, creating parent directories; a no-op when the source does not exist. */
-export async function moveIfExists(from: string, to: string): Promise<void> {
-  if (!await exists(from)) return;
+/** Removes Deno's machine-specific AMD name from one generated declaration. */
+export async function stripGeneratedAmdDirective(path: string): Promise<void> {
+  const declaration = await readText(path);
+  let offset = 0;
+  if (declaration.startsWith("#!")) {
+    while (offset < declaration.length && !LINE_TERMINATOR.test(declaration[offset])) offset++;
+  }
+
+  // Stopping at the first token protects AMD-looking text inside declaration syntax.
+  while (offset < declaration.length) {
+    const match = declaration.slice(offset).match(GENERATED_AMD_DIRECTIVE);
+    if (match !== null) {
+      await Deno.writeTextFile(path, declaration.slice(0, offset) + declaration.slice(offset + match[0].length));
+      return;
+    }
+    if (WHITESPACE.test(declaration[offset])) {
+      offset++;
+      continue;
+    }
+    if (declaration.startsWith("//", offset)) {
+      offset += 2;
+      while (offset < declaration.length && !LINE_TERMINATOR.test(declaration[offset])) offset++;
+      continue;
+    }
+    if (declaration.startsWith("/*", offset)) {
+      const end = declaration.indexOf("*/", offset + 2);
+      if (end === -1) break;
+      offset = end + 2;
+      continue;
+    }
+    break;
+  }
+}
+
+/**
+ * Moves an emitted artifact into place, creating parent directories.
+ *
+ * @throws {BuildError} `EMIT_FAILED` when the artifact was not emitted.
+ */
+export async function moveEmitted(from: string, to: string): Promise<void> {
   await ensureDir(dirname(to));
-  await Deno.rename(from, to);
+  try {
+    await Deno.rename(from, to);
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) {
+      throw new BuildError("EMIT_FAILED", "transpile did not emit expected artifact", { subject: from, cause: e });
+    }
+    throw e;
+  }
 }
 
 /** Copies a single file, creating parent directories. */
@@ -62,37 +114,62 @@ export async function* walkFiles(dir: string, exts: string[]): AsyncGenerator<st
   for await (const entry of walk(dir, { includeDirs: false, exts })) yield entry.path;
 }
 
-// ── Subprocess ───────────────────────────────────────────────────────────────
+// =============================================================================
+// Subprocess
+// =============================================================================
 
-/** Options for one `deno transpile` invocation. */
+/**
+ * Options for one `deno transpile` invocation.
+ *
+ * @see https://docs.deno.com/runtime/reference/cli/transpile/
+ */
 interface TranspileOptions {
   importMap: string;
   files: string[];
   outDir: string;
   cwd: string;
-  sourceMap: "inline" | "separate" | "none";
+  /** `"none"` disables the subprocess's auto-discovery of `deno.json`/`deno.lock` from cwd ancestors. */
+  config: "inherit" | "none";
 }
 
 /**
- * Runs `deno transpile`, emitting `.js`, source maps (inline, separate, or none), and type-checked `.d.ts` for `files`.
+ * Runs `deno transpile`, emitting JS/MJS, separate source maps, and type-checked declarations for `files`.
  *
- * @throws {BuildError} `TRANSPILE_FAILED` when the `deno transpile` subprocess exits non-zero (e.g. a type error).
+ * @throws {BuildError} `EMIT_FAILED` when the `deno transpile` subprocess exits non-zero.
  */
 export async function transpile(options: TranspileOptions): Promise<void> {
   try {
-    await run("deno", [
+    // The vendor output tree already contains copied declarations;
+    // only files created by this subprocess are compiler-owned.
+    const existingDeclarations = new Set<string>();
+    if (await exists(options.outDir)) {
+      for await (const path of walkFiles(options.outDir, DECLARATION_EXTENSIONS)) {
+        existingDeclarations.add(path);
+      }
+    }
+
+    await run(Deno.execPath(), [
       "transpile",
+      ...(options.config === "none" ? ["--no-config", "--no-lock"] : []),
       "--import-map",
       options.importMap,
       "--declaration",
       "--source-map",
-      options.sourceMap,
+      "separate",
       "--outdir",
       options.outDir,
+      "--",
       ...options.files,
     ], options.cwd);
+
+    // HACK:
+    // Declaration emit assigns absolute file-URL AMD names to ESM modules, exposing the build path in package types.
+    for await (const path of walkFiles(options.outDir, DECLARATION_EXTENSIONS)) {
+      if (existingDeclarations.has(path)) continue;
+      await stripGeneratedAmdDirective(path);
+    }
   } catch (e) {
-    throw new BuildError("TRANSPILE_FAILED", e instanceof Error ? e.message : String(e));
+    throw new BuildError("EMIT_FAILED", e instanceof Error ? e.message : String(e), { cause: e });
   }
 }
 
@@ -102,7 +179,8 @@ async function run(cmd: string, args: string[], cwd: string): Promise<void> {
     .output();
   if (code !== 0) {
     const dec = new TextDecoder();
-    const detail = [dec.decode(stdout), dec.decode(stderr)].filter((s) => s.length > 0).join("\n");
-    throw new Error(`${cmd} ${args.join(" ")} exited with ${code}\n${detail}`);
+    // Diagnostics first: the command echo grows with the file list and must not bury them.
+    const parts = [dec.decode(stdout), dec.decode(stderr), `(${cmd} ${args.join(" ")} exited with ${code})`];
+    throw new Error(parts.filter((s) => s.length > 0).join("\n"));
   }
 }

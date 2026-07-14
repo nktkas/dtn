@@ -1,119 +1,170 @@
 // deno-lint-ignore-file no-import-prefix
-import { assertEquals } from "jsr:@std/assert@1";
-import { restoreJsonAttributes, rewriteSpecifiers, sourceMappingComment } from "../src/rewrite.ts";
 
-// Wraps each located specifier in <…> so the test can assert both which specifiers were seen and that only the
-// quoted text — not a byte around it — was spliced.
-function rw(code: string, file: string): { out: string; seen: string[] } {
+/**
+ * Unit tests for static specifier rewriting and source-map composition.
+ *
+ * @module
+ */
+
+import { decode, encode, type SourceMapMappings } from "@jridgewell/sourcemap-codec";
+import { assertEquals, assertThrows } from "jsr:@std/assert@1";
+import { BuildError } from "../src/errors.ts";
+import { restoreSourceMapSource, rewriteSpecifiers, updateGeneratedSourceMap } from "../src/rewrite.ts";
+
+function rewrite(code: string, file: string): { code: string; seen: string[] } {
   const seen: string[] = [];
-  const out = rewriteSpecifiers(code, file, (s) => {
-    seen.push(s);
-    return `<${s}>`;
+  const result = rewriteSpecifiers(code, file, (specifier) => {
+    seen.push(specifier);
+    return `${specifier}?rewritten`;
   });
-  return { out, seen };
+  return { code: result.code, seen };
 }
 
-Deno.test("rewriteSpecifiers — locates every specifier form", async (t) => {
-  await t.step("static import", () => {
-    const { out, seen } = rw(`import x from "./util.ts";`, "mod.js");
-    assertEquals(out, `import x from "<./util.ts>";`);
-    assertEquals(seen, ["./util.ts"]);
-  });
-
-  await t.step("export … from", () => {
-    const { out, seen } = rw(`export { y } from "./y.ts";`, "mod.js");
-    assertEquals(out, `export { y } from "<./y.ts>";`);
-    assertEquals(seen, ["./y.ts"]);
-  });
-
-  await t.step("export * from", () => {
-    const { out, seen } = rw(`export * from "./all.ts";`, "mod.js");
-    assertEquals(out, `export * from "<./all.ts>";`);
-    assertEquals(seen, ["./all.ts"]);
-  });
-
-  await t.step("dynamic import() mid-expression", () => {
-    const { out, seen } = rw(`const m = await import("./dyn.ts");`, "mod.js");
-    assertEquals(out, `const m = await import("<./dyn.ts>");`);
-    assertEquals(seen, ["./dyn.ts"]);
-  });
-
-  await t.step("import.meta.resolve()", () => {
-    const { out, seen } = rw(`const u = import.meta.resolve("./asset.bin");`, "mod.js");
-    assertEquals(out, `const u = import.meta.resolve("<./asset.bin>");`);
-    assertEquals(seen, ["./asset.bin"]);
-  });
-
-  await t.step("export type … from (declaration dialect)", () => {
-    const { out, seen } = rw(`export type { T } from "./t.ts";`, "mod.d.ts");
-    assertEquals(out, `export type { T } from "<./t.ts>";`);
-    assertEquals(seen, ["./t.ts"]);
-  });
-
-  await t.step("TSImportType type query (declaration dialect)", () => {
-    const { out, seen } = rw(`export declare const x: import("./types.ts").Foo;`, "mod.d.ts");
-    assertEquals(out, `export declare const x: import("<./types.ts>").Foo;`);
-    assertEquals(seen, ["./types.ts"]);
-  });
-});
-
-Deno.test("rewriteSpecifiers — leaves non-specifier strings alone", async (t) => {
-  await t.step("a string literal that looks like a path is not rewritten", () => {
-    const { out, seen } = rw(`const s = "./fake.ts";\nimport x from "./real.ts";`, "mod.js");
-    assertEquals(out, `const s = "./fake.ts";\nimport x from "<./real.ts>";`);
-    assertEquals(seen, ["./real.ts"]);
-  });
-
-  await t.step("multiple specifiers of differing lengths splice independently", () => {
-    const { out, seen } = rw(`import a from "./a.ts";\nimport bbb from "./bbbbbb.ts";`, "mod.js");
-    assertEquals(out, `import a from "<./a.ts>";\nimport bbb from "<./bbbbbb.ts>";`);
-    assertEquals(seen, ["./a.ts", "./bbbbbb.ts"]);
-  });
-
-  await t.step("a node: builtin specifier is still located (the callback decides to keep it)", () => {
-    const seen: string[] = [];
-    const out = rewriteSpecifiers(`import { readFile } from "node:fs/promises";`, "mod.js", (s) => {
-      seen.push(s);
-      return s;
+Deno.test("rewriteSpecifiers — supported syntax", async (t) => {
+  await t.step("rewrites imports, re-exports, runtime imports, and declaration import types", () => {
+    const source = `import x from "./x.ts";\nexport { y } from "./y.ts";\nexport * from "./z.ts";\n`;
+    assertEquals(rewrite(source, "mod.js"), {
+      code:
+        `import x from "./x.ts?rewritten";\nexport { y } from "./y.ts?rewritten";\nexport * from "./z.ts?rewritten";\n`,
+      seen: ["./x.ts", "./y.ts", "./z.ts"],
     });
-    assertEquals(out, `import { readFile } from "node:fs/promises";`);
-    assertEquals(seen, ["node:fs/promises"]);
+    assertEquals(rewrite(`export declare const x: import("./types.ts").Foo;`, "mod.d.ts"), {
+      code: `export declare const x: import("./types.ts?rewritten").Foo;`,
+      seen: ["./types.ts"],
+    });
+    assertEquals(rewrite(`declare module "./types.ts" {}`, "mod.d.ts"), {
+      code: `declare module "./types.ts?rewritten" {}`,
+      seen: ["./types.ts"],
+    });
+    assertEquals(rewrite(`const x = import("./runtime.json", { with: { type: "json" } });`, "mod.js"), {
+      code: `const x = import("./runtime.json?rewritten", { with: { type: "json" } });`,
+      seen: ["./runtime.json"],
+    });
   });
 
-  await t.step("a `.resolve()` look-alike (not import.meta.resolve) is left untouched", () => {
-    // Only `import.meta.resolve(...)` is a specifier site; `Promise.resolve` / `path.resolve` must not be rewritten.
-    const code = `const a = Promise.resolve("./payload.ts");\nconst b = path.resolve("./dir.ts");`;
-    const { out, seen } = rw(code, "mod.js");
-    assertEquals(out, code);
-    assertEquals(seen, []);
+  await t.step("does not rewrite computed runtime imports or import.meta.resolve", () => {
+    const source = `const a = import("./features/" + name + ".ts");\n` +
+      `const b = import.meta.resolve("./b.ts");\n`;
+    assertEquals(rewrite(source, "mod.js"), { code: source, seen: [] });
   });
 
-  await t.step("non-ASCII before a specifier does not shift the splice (UTF-16, not byte, offsets)", () => {
-    const { out, seen } = rw(`const s = "💥💥💥";\nimport x from "./util.ts";`, "mod.js");
-    assertEquals(out, `const s = "💥💥💥";\nimport x from "<./util.ts>";`);
-    assertEquals(seen, ["./util.ts"]);
+  await t.step("passes the decoded value and serializes the replacement safely", () => {
+    const source = String.raw`import x from ".\u002fx.ts";`;
+    const result = rewriteSpecifiers(source, "mod.js", (specifier) => {
+      assertEquals(specifier, "./x.ts");
+      return `./x\".js`;
+    });
+    assertEquals(result.code, `import x from "./x\\\".js";`);
+  });
+
+  await t.step("leaves unchanged literals byte-for-byte", () => {
+    const source = `import x from './x.js';`;
+    assertEquals(rewriteSpecifiers(source, "mod.js", (specifier) => specifier), { code: source, edits: [] });
+  });
+
+  await t.step("preserves line terminators when removing a block source-map directive", () => {
+    const source = `function value() { return /*# sourceMappingURL=mod.js.map\n*/ { answer: 42 }; }`;
+    const result = rewriteSpecifiers(source, "mod.js", (specifier) => specifier, true);
+    assertEquals(result.code.indexOf("\n"), source.indexOf("\n"));
+    assertEquals(result.code.includes("sourceMappingURL"), false);
+  });
+
+  await t.step("fails when parsing yields no usable module", () => {
+    const error = assertThrows(() => rewriteSpecifiers(`import x from ;`, "mod.js", (s) => s), BuildError);
+    assertEquals(error.code, "EMIT_FAILED");
+    assertEquals(error.subject, "mod.js");
   });
 });
 
-Deno.test("restoreJsonAttributes", async (t) => {
-  await t.step('re-adds the with { type: "json" } attribute dropped from declarations', () => {
-    assertEquals(
-      restoreJsonAttributes(`import data from "./config.json";`),
-      `import data from "./config.json" with { type: "json" };`,
+Deno.test("source-map composition", async (t) => {
+  await t.step("shifts generated columns after a rewritten specifier", () => {
+    const before = `import x from "./x.ts"; export const y = x;\n`;
+    const rewritten = rewriteSpecifiers(before, "mod.js", () => "./much-longer-name.js");
+    const mappings: SourceMapMappings = [[[0, 0, 0, 0], [25, 0, 0, 25], [32, 0, 0, 32]]];
+    const map = JSON.stringify({
+      version: 3,
+      file: "mod.js",
+      sources: ["file:///src/mod.ts"],
+      sourcesContent: [before],
+      names: [],
+      mappings: encode(mappings),
+    });
+    const updated = JSON.parse(
+      updateGeneratedSourceMap(map, before, rewritten.code, rewritten.edits, "mod.js.map"),
     );
-    assertEquals(
-      restoreJsonAttributes(`export * from "./x.json";`),
-      `export * from "./x.json" with { type: "json" };`,
-    );
+    const decoded = decode(updated.mappings);
+    const delta = rewritten.code.length - before.length;
+    assertEquals(decoded[0].map((segment) => segment[0]), [0, 25 + delta, 32 + delta]);
   });
 
-  await t.step("non-json imports are untouched", () => {
-    assertEquals(restoreJsonAttributes(`import x from "./util.js";`), `import x from "./util.js";`);
+  await t.step("maps vendored source positions back and records remote provenance", () => {
+    const original = `export { x } from "jsr:@scope/x";\n`;
+    const rewritten = rewriteSpecifiers(original, "mod.ts", () => "./p-x/mod.ts");
+    const sourceColumn = rewritten.code.indexOf(";");
+    const map = JSON.stringify({
+      version: 3,
+      file: "mod.js",
+      sources: ["file:///tmp/vendor/mod.ts"],
+      sourcesContent: [rewritten.code],
+      names: [],
+      mappings: encode([[[0, 0, 0, 0], [10, 0, 0, sourceColumn]]]),
+    });
+    const restored = JSON.parse(
+      restoreSourceMapSource(
+        map,
+        rewritten.code,
+        original,
+        rewritten.edits,
+        "https://jsr.io/@scope/pkg/1/mod.ts",
+        "mod.js.map",
+      ),
+    );
+    assertEquals(restored.sources, ["https://jsr.io/@scope/pkg/1/mod.ts"]);
+    assertEquals(restored.sourcesContent, [original]);
+    assertEquals(decode(restored.mappings)[0][1][3], original.indexOf(";"));
   });
-});
 
-Deno.test("sourceMappingComment", async (t) => {
-  await t.step("formats the trailing sourceMappingURL comment", () => {
-    assertEquals(sourceMappingComment("mod.js.map"), "//# sourceMappingURL=mod.js.map\n");
+  await t.step("recognizes every JavaScript line terminator while restoring vendored positions", () => {
+    for (const terminator of ["\r", "\r\n", "\u2028", "\u2029"]) {
+      const original = `export { x } from "jsr:@scope/x";${terminator}export const y = 1;`;
+      const rewritten = rewriteSpecifiers(original, "mod.ts", () => "./p-x/mod.ts");
+      const sourceColumn = 7;
+      const map = JSON.stringify({
+        version: 3,
+        file: "mod.js",
+        sources: ["file:///tmp/vendor/mod.ts"],
+        sourcesContent: [rewritten.code],
+        names: [],
+        mappings: encode([[[0, 0, 1, sourceColumn]]]),
+      });
+      const restored = JSON.parse(
+        restoreSourceMapSource(
+          map,
+          rewritten.code,
+          original,
+          rewritten.edits,
+          "https://jsr.io/@scope/pkg/1/mod.ts",
+          "mod.js.map",
+        ),
+      );
+      assertEquals(decode(restored.mappings)[0][0].slice(2), [1, sourceColumn], JSON.stringify(terminator));
+    }
+  });
+
+  await t.step("preserves empty mapping lines", () => {
+    const before = `import x from "./x.ts";\n\nexport const y = x;\n`;
+    const rewritten = rewriteSpecifiers(before, "mod.js", () => "./longer.js");
+    const map = JSON.stringify({
+      version: 3,
+      file: "mod.js",
+      sources: ["file:///src/mod.ts"],
+      sourcesContent: [before],
+      names: [],
+      mappings: encode([[[0, 0, 0, 0]], [], [[0, 0, 2, 0]]]),
+    });
+    const updated = JSON.parse(
+      updateGeneratedSourceMap(map, before, rewritten.code, rewritten.edits, "mod.js.map"),
+    );
+    assertEquals(decode(updated.mappings)[1], []);
   });
 });

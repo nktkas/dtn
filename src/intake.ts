@@ -7,44 +7,47 @@
 import { join, resolve } from "@std/path";
 import type { PackageJson } from "type-fest";
 import { BuildError } from "./errors.ts";
-import { parseRegistry } from "./spec.ts";
+import { parseRegistry, parseReplacement } from "./spec.ts";
 
-/** The `deno.json` configuration for the package. */
+/**
+ * The `deno.json` configuration for the package.
+ *
+ * @see https://docs.deno.com/runtime/fundamentals/configuration/
+ */
 export interface DenoConfig {
+  /** npm package name. */
   name: string;
+  /** npm package version. */
   version: string;
+  /** Runtime TypeScript entry point or explicit subpath map. */
   exports: string | Record<string, string>;
+  /** Aliases targeting `jsr:` or `npm:` packages. */
   imports?: Record<string, string>;
 }
 
 /** Everything the engine needs that is not derivable from `deno.json`, supplied as build parameters. */
 export interface BuildConfig {
-  /** Output directory, relative to the current working directory. */
+  /** Output directory, relative to the project root. */
   outDir: string;
+  /**
+   * Project root against which relative paths resolve.
+   *
+   * @default Deno.cwd()
+   */
+  root?: string;
+  /** Package metadata and registry aliases from `deno.json`. */
   denoJson: DenoConfig;
   /**
    * Import-map aliases whose dependency is replaced by an npm package instead of being vendored.
    *
-   * The value is the npm package name, optionally with a version range (`"valibot"` or `"valibot@^1"`); when the
-   * version is omitted it is taken from the alias's import specifier. Every alias must exist in `deno.imports`.
+   * The value is the npm package name, optionally with a version range (`"valibot"` or `"valibot@^1"`);
+   * an omitted version comes from the alias's import specifier. Every alias must exist in `deno.imports`.
    */
   npmReplacements?: Record<string, string>;
-  /**
-   * Fields merged into the generated `package.json`. The engine computes `name`, `version`, `type`, `exports`, the
-   * root `main`/`types`, and `dependencies`; these take precedence over the same keys provided here.
-   */
+  /** Fields merged into the generated `package.json`; dtn-generated values take precedence. */
   packageJson?: PackageJson;
-  /** Files copied verbatim into the package root (e.g. `README.md`, `LICENSE`). */
+  /** Files copied verbatim into the package root, such as `README.md` and `LICENSE`. */
   copyFiles?: string[];
-  /**
-   * Source-map mode:
-   * - `"none"`: no source map
-   * - `"inline"`: embed the source map as a `data:` comment in each file
-   * - `"separate"`: write a sibling `.js.map` (or `.mjs.map` / `.cjs.map`)
-   *
-   * @default "separate"
-   */
-  sourceMap?: "inline" | "separate" | "none";
   /**
    * Directory under the package code root that holds inlined (vendored) dependencies.
    *
@@ -69,17 +72,13 @@ export interface Plan {
   npmReplacements: Record<string, string>;
   packageJson: PackageJson;
   copyFiles: string[];
-  sourceMap: "inline" | "separate" | "none";
   depsDir: string;
 }
 
 /**
- * Validates {@linkcode config} and resolves its paths against {@linkcode repoRoot}, yielding a {@linkcode Plan}.
+ * Validates {@linkcode config}, resolves its paths against {@linkcode repoRoot}, and yields a {@linkcode Plan}.
  *
- * @throws {BuildError} `INVALID_EXPORTS` when `deno.exports` is empty, an entry is not a `.ts`/`.d.ts` source, or a
- *                       wildcard export has no single matching `*` in subpath and source.
- * @throws {BuildError} `REPLACEMENT_ALIAS_UNKNOWN` when an `npmReplacements` alias is absent from `deno.imports`.
- * @throws {BuildError} `REPLACEMENT_TARGET_INVALID` when a replaced alias maps to neither a jsr nor an npm specifier.
+ * @throws {BuildError} `INVALID_CONFIG` when exports, imports, or npm replacements violate the supported contract.
  *
  * @example
  * ```ts
@@ -89,7 +88,9 @@ export interface Plan {
  *     name: "@scope/lib",
  *     version: "1.0.0",
  *     exports: "./src/mod.ts", // a string exports normalizes to a "." entry
- *     imports: { "@valibot/valibot": "jsr:@valibot/valibot@1" }, // jsr alias, replaced below by an npm package
+ *     imports: {
+ *       "@valibot/valibot": "jsr:@valibot/valibot@1",
+ *     }, // jsr alias, replaced below by an npm package
  *   },
  *   npmReplacements: { "@valibot/valibot": "valibot" },
  * }, "/repo");
@@ -106,21 +107,27 @@ export function intake(config: BuildConfig, repoRoot: string): Plan {
   const imports = config.denoJson.imports ?? {};
   const npmReplacements = config.npmReplacements ?? {};
 
-  for (const alias of Object.keys(npmReplacements)) {
-    const target = imports[alias];
-    if (target === undefined) {
-      throw new BuildError(
-        "REPLACEMENT_ALIAS_UNKNOWN",
-        `npmReplacements alias is missing from the deno.json import map`,
-        alias,
-      );
-    }
+  for (const [alias, target] of Object.entries(imports)) {
     if (parseRegistry(target) === null) {
-      throw new BuildError(
-        "REPLACEMENT_TARGET_INVALID",
-        `npmReplacements alias maps to neither a jsr nor an npm specifier`,
-        alias,
-      );
+      throw new BuildError("INVALID_CONFIG", "import-map aliases must target an npm or JSR package", {
+        subject: alias,
+      });
+    }
+    if (alias.endsWith("/") !== target.endsWith("/")) {
+      throw new BuildError("INVALID_CONFIG", "import-map prefix aliases and targets must both end with '/'", {
+        subject: alias,
+      });
+    }
+  }
+
+  for (const [alias, replacement] of Object.entries(npmReplacements)) {
+    if (!Object.hasOwn(imports, alias)) {
+      throw new BuildError("INVALID_CONFIG", "npmReplacements alias is missing from the deno.json import map", {
+        subject: alias,
+      });
+    }
+    if (parseReplacement(replacement) === null) {
+      throw new BuildError("INVALID_CONFIG", "npmReplacements value is not an npm package name", { subject: alias });
     }
   }
 
@@ -137,7 +144,6 @@ export function intake(config: BuildConfig, repoRoot: string): Plan {
     npmReplacements,
     packageJson: config.packageJson ?? {},
     copyFiles: config.copyFiles ?? [],
-    sourceMap: config.sourceMap ?? "separate",
     depsDir: config.depsDir ?? "_deps",
   };
 }
@@ -145,30 +151,25 @@ export function intake(config: BuildConfig, repoRoot: string): Plan {
 /**
  * Normalizes `deno.exports` (a string or a subpath → source map) into a subpath → source map.
  *
- * @throws {BuildError} `INVALID_EXPORTS` when there are no exports, an entry is not a `.ts`/`.d.ts` source, or a
- *                       wildcard export has no single matching `*` in subpath and source.
+ * @throws {BuildError} `INVALID_CONFIG` when exports are empty or an entry is not one explicit runtime `.ts` source.
  */
 function normalizeExports(exports: string | Record<string, string>): Record<string, string> {
   const map = typeof exports === "string" ? { ".": exports } : exports;
   const entries = Object.entries(map);
   if (entries.length === 0) {
-    throw new BuildError("INVALID_EXPORTS", "deno.json has no exports to build from");
+    throw new BuildError("INVALID_CONFIG", "deno.json has no exports to build from");
   }
   for (const [subpath, source] of entries) {
     if (source.length === 0) {
-      throw new BuildError("INVALID_EXPORTS", `export entry is not a source path`, subpath);
+      throw new BuildError("INVALID_CONFIG", "export entry is not a source path", { subject: subpath });
     }
-    // Only `.ts` and `.d.ts` entry points yield a typed, behavior-preserving export.
-    if (!source.endsWith(".ts")) {
-      throw new BuildError("INVALID_EXPORTS", `export entry must be a .ts or .d.ts source`, `${subpath} → ${source}`);
+    if (subpath !== "." && !subpath.startsWith("./")) {
+      throw new BuildError("INVALID_CONFIG", "export key must be '.' or start with './'", { subject: subpath });
     }
-    const srcStars = (source.match(/\*/g) ?? []).length;
-    if (srcStars !== (subpath.match(/\*/g) ?? []).length || srcStars > 1) {
-      throw new BuildError(
-        "INVALID_EXPORTS",
-        `a wildcard export needs exactly one matching "*" in subpath and source`,
-        `${subpath} → ${source}`,
-      );
+    if (!source.endsWith(".ts") || source.endsWith(".d.ts") || source.includes("*") || subpath.includes("*")) {
+      throw new BuildError("INVALID_CONFIG", "export entry must be one explicit runtime .ts source", {
+        subject: `${subpath} → ${source}`,
+      });
     }
   }
   return { ...map };

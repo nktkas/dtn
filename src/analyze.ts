@@ -1,6 +1,5 @@
 /**
- * Classifies every reachable module of the graph into one {@linkcode Analysis}: each module's
- * {@linkcode Fate}, the npm dependency set, and the {@linkcode SpecifierIndex}.
+ * Classifies the reachable graph into package artifacts, npm dependencies, and referrer-specific specifier bindings.
  *
  * @module
  */
@@ -8,511 +7,376 @@
 import { common, dirname, fromFileUrl, relative } from "@std/path";
 import { BuildError } from "./errors.ts";
 import type { Plan } from "./intake.ts";
-import type { RawGraph, RawModule } from "./graph.ts";
-import {
-  isRelative,
-  jsrUrlPackage,
-  jsToTs,
-  parseRegistry,
-  parseReplacement,
-  toPosix,
-  tsToJs,
-  vendoredRel,
-} from "./spec.ts";
+import type { RawGraph, RawMediaType, RawModule } from "./graph.ts";
+import { isRelative, jsToDts, parseRegistry, parseReplacement, toPosix, tsToJs, vendoredRel } from "./spec.ts";
 
-// ── Classification ──────────────────────────────────────────────────────────
+// =============================================================================
+// Classification
+// =============================================================================
 
-// These sets hold `@deno/graph`'s exact `mediaType` strings, matched against an untyped `module.mediaType`; a typo
-// silently routes a source to the unsupported-media throw, with no compile-time check.
+/** Local source media copied into the package instead of being transpiled. */
+const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Dmts", "Dcts", "Json"]);
 
-/** Local source media types copied into the package verbatim instead of being transpiled. */
-const COPY_MEDIA: ReadonlySet<string> = new Set(["JavaScript", "Mjs", "Cjs", "Json", "Dts", "Wasm"]);
+/** Remote media copied and rewritten without transpilation. */
+const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Dmts", "Dcts", "Json"]);
 
-/** Remote media types vendored as raw byte assets instead of being transpiled. */
-const ASSET_MEDIA: ReadonlySet<string> = new Set(["Json", "Wasm"]);
-
-/** Remote media inlined verbatim — rewritten for Node, not transpiled: JavaScript modules and type declarations. */
-const VENDOR_COPY_MEDIA: ReadonlySet<string> = new Set(["JavaScript", "Mjs", "Cjs", "Dts"]);
-
-/** What becomes of a single reachable module. */
+/** What becomes of one reachable graph module. */
 type Fate =
-  | { kind: "transpile"; path: string } // local `.ts` → deno transpile
-  | { kind: "copy"; path: string } // local `.js`/`.mjs`/`.cjs`/`.json`/`.d.ts` → copied verbatim
-  | { kind: "vendorCode"; url: string; rel: string } // remote `.ts` → inlined and transpiled
-  | { kind: "vendorCopy"; url: string; rel: string } // remote `.js`/`.mjs`/`.cjs`/`.d.ts` → inlined, rewritten, not transpiled
-  | { kind: "vendorAsset"; url: string; rel: string } // remote JSON/Wasm → copied byte-for-byte
-  | { kind: "external"; npm: { name: string; version: string } | null }; // npm/node/replaced → no emit, a graph leaf
+  | { kind: "transpile"; path: string }
+  | { kind: "copy"; path: string }
+  | { kind: "vendorCode"; url: string; src: string; emit: string }
+  | { kind: "vendorCopy"; url: string; rel: string }
+  | { kind: "external"; npm: { name: string; version: string } | null };
 
-/** The single result of analysis. Each later stage reads only the slice it needs. */
+/** One resolved graph edge's package target. */
+type SpecTarget =
+  | { kind: "vendored"; src: string; emit: string }
+  | { kind: "local"; emit: string; suffix: string }
+  | { kind: "npm"; bare: string; registry: string };
+
+/** An import-map alias bound to an npm package. */
+interface AliasBinding {
+  alias: string;
+  npmName: string;
+  /** Subpath carried by the configured registry target, including its leading slash. */
+  subpath: string;
+  version: string;
+}
+
+/** Import map passed to one declaration-emitting subprocess. */
+interface DeclarationImportMap {
+  imports: Record<string, string>;
+  scopes: Record<string, Record<string, string>>;
+}
+
+/** The analyzed build plan consumed by the effectful stages. */
 export interface Analysis {
   plan: Plan;
-  /** Common ancestor directory of all local sources; the package code root mirrors the tree below it. */
+  /** Common ancestor directory of every local source. */
   srcRoot: string;
-  /** Absolute paths of local `.ts` sources to transpile. */
+  /** Absolute local TypeScript/MTS paths passed to `deno transpile`. */
   localFiles: string[];
-  /** Absolute paths of local non-`.ts` sources copied verbatim. */
+  /** Absolute local JavaScript/MJS/JSON/declaration paths copied verbatim. */
   localCopies: string[];
-  /** Remote code-module URL → package-relative `.js` path. */
-  vendoredCode: Map<string, string>;
-  /** Remote JavaScript or type-declaration URL → package-relative path (copied verbatim and rewritten, not transpiled). */
+  /** Remote TypeScript/MTS URL to staged source and emitted JavaScript/MJS paths. */
+  vendoredCode: Map<string, { src: string; emit: string }>;
+  /** Remote JavaScript/MJS/JSON/declaration URL to copied package path. */
   vendoredCopies: Map<string, string>;
-  /** Remote asset URL → package-relative path (copied byte-for-byte). */
-  vendoredAssets: Map<string, string>;
-  /** npm dependency name → version range, for `package.json` `dependencies`. */
+  /** Emitted package-relative module path to its original graph referrer. */
+  sourceByOutput: Map<string, string>;
+  /** npm package name to version requirement. */
   npmDeps: Record<string, string>;
   specifiers: SpecifierIndex;
 }
 
 /**
- * Classifies every module reachable from the entry points (not through a replaced package), producing the
- * {@linkcode Analysis}.
+ * Classifies every module reachable from the entry points.
  *
- * @throws {BuildError} `UNSUPPORTED_LOCAL_SOURCE` for a local source whose media type the engine does not handle.
- * @throws {BuildError} `UNSUPPORTED_VENDORED_DEPENDENCY` for a vendored dependency the engine cannot inline (an
- *                       unsupported media type, or a hostless URL like `data:`).
- * @throws {BuildError} `MODULE_LOAD_FAILED` for a module the graph could not load.
- * @throws {BuildError} `REPLACEMENT_DIRECT_IMPORT` for a replaced package imported directly by local code.
- * @throws {BuildError} `UNRESOLVED_SPECIFIER` for a specifier resolving to neither a vendored file nor an npm package.
- *
- * @example
- * ```ts ignore
- * // For a project whose src/mod.ts imports:
- * //   "@valibot/valibot"  (jsr, replaced by the npm package "valibot")
- * //   "@std/encoding/hex" (jsr, no npm twin -> vendored)
- * //   "./util.ts"         (local)
- * const analysis = analyze(plan, graph);
- *
- * // analysis.localFiles   -> ["/repo/src/mod.ts", "/repo/src/util.ts"]
- * // analysis.npmDeps      -> { valibot: "1.3.1" }
- * // analysis.vendoredCode -> Map { "https://jsr.io/@std/encoding/1.0.0/hex.ts" => "_deps/jsr.io/@std/encoding/1.0.0/hex.js" }
- * ```
+ * @throws {BuildError} `UNSUPPORTED_MODULE` for an unsupported local or remote medium.
+ * @throws {BuildError} `DEPENDENCY_FAILED` when loading/resolution fails or npm requirement strings differ for one package.
  */
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
-  const npmDeps: Record<string, string> = {};
+  const npmDeps = new Map<string, string>();
+  const recordNpmDependency = (name: string, version: string): void => {
+    const existing = npmDeps.get(name);
+    if (existing !== undefined && existing !== version) {
+      const requirements = [existing, version].sort().map((requirement) => JSON.stringify(requirement));
+      throw new BuildError(
+        "DEPENDENCY_FAILED",
+        `npm package has conflicting version requirements ${requirements[0]} and ${requirements[1]}`,
+        { subject: name },
+      );
+    }
+    npmDeps.set(name, version);
+  };
   const aliases: AliasBinding[] = [];
-  const replacedJsrPackages = new Map<string, string>();
+  const importAliases = Object.keys(plan.imports).sort((a, b) => b.length - a.length);
 
-  // Replaced dependencies: the npm name (and optional version) come from the replacement value; the subpath, and
-  // the version when the replacement omits it, come from the alias's jsr/npm import (validated at intake).
   for (const [alias, replacement] of Object.entries(plan.npmReplacements)) {
-    const { name: npmName, version: explicitVersion } = parseReplacement(replacement);
-    const parsed = parseRegistry(plan.imports[alias]);
-    const version = explicitVersion ?? parsed?.version ?? "*";
-    npmDeps[npmName] = version;
-    aliases.push({ alias, npmName, subpath: parsed?.subpath ?? "", version });
-    if (parsed?.scheme === "jsr") replacedJsrPackages.set(parsed.pkg, npmName);
+    const parsedReplacement = parseReplacement(replacement);
+    if (parsedReplacement === null) {
+      throw new BuildError("INVALID_CONFIG", "npmReplacements value is not an npm package name", { subject: alias });
+    }
+    const parsedTarget = parseRegistry(plan.imports[alias]);
+    const version = parsedReplacement.version ?? parsedTarget?.version ?? "*";
+    recordNpmDependency(parsedReplacement.name, version);
+    aliases.push({ alias, npmName: parsedReplacement.name, subpath: parsedTarget?.subpath ?? "", version });
   }
 
-  // Direct npm: imports from the import map.
-  for (const [alias, spec] of Object.entries(plan.imports)) {
-    if (alias in plan.npmReplacements) continue;
-    const npm = parseRegistry(spec);
-    if (npm === null || npm.scheme !== "npm") continue;
-    const version = npm.version ?? "*";
-    npmDeps[npm.pkg] = version;
-    aliases.push({ alias, npmName: npm.pkg, subpath: npm.subpath, version });
+  for (const [alias, specifier] of Object.entries(plan.imports)) {
+    if (Object.hasOwn(plan.npmReplacements, alias)) continue;
+    const target = parseRegistry(specifier);
+    if (target?.scheme !== "npm") continue;
+    const version = target.version ?? "*";
+    recordNpmDependency(target.pkg, version);
+    aliases.push({ alias, npmName: target.pkg, subpath: target.subpath, version });
   }
 
-  // Walk the graph from the entry points, treating npm/node/replaced modules as leaves. Anything reachable only
-  // through a replaced package is never visited, so it is neither vendored nor type-checked.
-  const bySpecifier = new Map(graph.modules.map((m) => [m.specifier, m] as const));
-  const reachable: Array<{ module: RawModule; fate: Fate }> = [];
+  const modules = new Map(graph.modules.map((module) => [module.specifier, module] as const));
+  const fates = new Map<string, Fate>();
+  const reachable: Array<{ module: RawModule; fate: Exclude<Fate, { kind: "external" }> }> = [];
   const seen = new Set<string>();
-  const queue = graph.modules.filter((m) => m.specifier.startsWith("file://")).map((m) => m.specifier);
+  const queue = graph.modules.filter((module) => module.specifier.startsWith("file://")).map((module) =>
+    module.specifier
+  );
 
   while (queue.length > 0) {
     const specifier = queue.pop()!;
     if (seen.has(specifier)) continue;
     seen.add(specifier);
 
-    const module = bySpecifier.get(specifier)!;
-
-    const fate = fateOf(module, replacedJsrPackages, plan.depsDir);
+    const module = modules.get(specifier);
+    if (module === undefined) {
+      throw new BuildError("DEPENDENCY_FAILED", "resolved module is absent from the graph", { subject: specifier });
+    }
+    const fate = fateOf(module, plan.depsDir);
+    fates.set(specifier, fate);
     if (fate.kind === "external") {
-      // `??=`: first walk-hit wins — one version per npm package, picked by entry-point order on a collision.
-      if (fate.npm !== null) npmDeps[fate.npm.name] ??= fate.npm.version;
+      if (fate.npm !== null) recordNpmDependency(fate.npm.name, fate.npm.version);
       continue;
     }
+
     reachable.push({ module, fate });
-    for (const d of module.dependencies) {
-      if (d.resolved !== undefined && !seen.has(d.resolved)) queue.push(d.resolved);
+    for (const dependency of module.dependencies) {
+      const alias = matchingAlias(dependency.specifier, importAliases);
+      if (alias !== null && Object.hasOwn(plan.npmReplacements, alias)) continue;
+      if (dependency.resolved !== undefined && !seen.has(dependency.resolved)) queue.push(dependency.resolved);
     }
   }
 
-  const localFiles: string[] = [];
-  const localCopies: string[] = [];
-  const vendoredCode = new Map<string, string>();
+  const localFiles = new Set<string>();
+  const localCopies = new Set<string>();
+  const vendoredCode = new Map<string, { src: string; emit: string }>();
   const vendoredCopies = new Map<string, string>();
-  const vendoredAssets = new Map<string, string>();
-  const localByUrl = new Map<string, string>();
-  for (const { module, fate } of reachable) {
-    switch (fate.kind) {
-      case "transpile":
-        localFiles.push(fate.path);
-        localByUrl.set(module.specifier, fate.path);
-        break;
-      case "copy":
-        localCopies.push(fate.path);
-        localByUrl.set(module.specifier, fate.path);
-        break;
-      case "vendorCode":
-        vendoredCode.set(fate.url, fate.rel);
-        break;
-      case "vendorCopy":
-        vendoredCopies.set(fate.url, fate.rel);
-        break;
-      case "vendorAsset":
-        vendoredAssets.set(fate.url, fate.rel);
-        break;
-      case "external":
-        break;
-      default: {
-        const _exhaustive: never = fate;
-      }
-    }
+  for (const { fate } of reachable) {
+    if (fate.kind === "transpile") localFiles.add(fate.path);
+    if (fate.kind === "copy") localCopies.add(fate.path);
+    if (fate.kind === "vendorCode") vendoredCode.set(fate.url, { src: fate.src, emit: fate.emit });
+    if (fate.kind === "vendorCopy") vendoredCopies.set(fate.url, fate.rel);
   }
 
-  // `common()` returns a trailing separator when the sources span divergent dirs ("/repo/"); strip it so the package
-  // code root mirrors cleanly below srcRoot.
   const allLocal = [...localFiles, ...localCopies];
-  const srcRoot = allLocal.length > 0 ? common(allLocal.map((f) => dirname(f))).replace(/[/\\]$/, "") : plan.repoRoot;
+  const srcRoot = common(allLocal.map((path) => dirname(path))).replace(/[/\\]$/, "");
+  const targets = new Map<string, SpecTarget>();
+  const sourceByOutput = new Map<string, string>();
+  for (const { module, fate } of reachable) {
+    if (fate.kind === "transpile" || fate.kind === "copy") {
+      const rel = toPosix(relative(srcRoot, fate.path));
+      const emit = fate.kind === "transpile" ? tsToJs(rel) : rel;
+      const url = new URL(module.specifier);
+      targets.set(module.specifier, { kind: "local", emit, suffix: url.search + url.hash });
+      sourceByOutput.set(emit, module.specifier);
+      if (fate.kind === "transpile") sourceByOutput.set(jsToDts(emit)!, module.specifier);
+      else {
+        const declaration = jsToDts(emit);
+        if (declaration !== null && !sourceByOutput.has(declaration)) {
+          sourceByOutput.set(declaration, module.specifier);
+        }
+      }
+      continue;
+    }
+    if (fate.kind === "vendorCode") {
+      const target = { kind: "vendored", src: fate.src, emit: fate.emit } as const;
+      targets.set(module.specifier, target);
+      sourceByOutput.set(fate.emit, module.specifier);
+      sourceByOutput.set(jsToDts(fate.emit)!, module.specifier);
+      continue;
+    }
+    targets.set(module.specifier, { kind: "vendored", src: fate.rel, emit: fate.rel });
+    sourceByOutput.set(fate.rel, module.specifier);
+  }
 
-  // Bind each written non-relative specifier to the package file it resolves to: a vendored dependency under `_deps`,
-  // or — for an import-map alias pointing at a local file (`"$u": "./util.ts"`) — that local source's emitted path.
-  // Relative specifiers rewrite by extension only, so they are skipped.
-  const vendoredBySpecifier = new Map<string, string>();
-  const vendorCopyBySpecifier = new Map<string, string>();
-  const localBySpecifier = new Map<string, { rel: string; source: string }>();
+  const edges = new Map<string, Map<string, SpecTarget>>();
   for (const { module } of reachable) {
-    for (const d of module.dependencies) {
-      if (isRelative(d.specifier) || d.resolved === undefined) continue;
-      const vendored = vendoredCode.get(d.resolved) ?? vendoredAssets.get(d.resolved);
-      if (vendored !== undefined) {
-        vendoredBySpecifier.set(d.specifier, vendored);
-        continue;
-      }
-      // Kept apart from `vendoredBySpecifier`: the declaration import map points the type-checker at a vendored module's
-      // `.ts` source, but a copied `.js`/`.d.ts` has none — folding the two would map it to a `.ts` that does not exist.
-      const vendoredCopy = vendoredCopies.get(d.resolved);
-      if (vendoredCopy !== undefined) {
-        vendorCopyBySpecifier.set(d.specifier, vendoredCopy);
-        continue;
-      }
-      const localAbs = localByUrl.get(d.resolved);
-      if (localAbs !== undefined) {
-        // A local `.d.ts` is copied verbatim (no `.js` twin); any other local source emits `.js`.
-        const rel = toPosix(relative(srcRoot, localAbs));
-        localBySpecifier.set(d.specifier, { rel: localAbs.endsWith(".d.ts") ? rel : tsToJs(rel), source: d.resolved });
-      }
+    const moduleEdges = new Map<string, SpecTarget>();
+    edges.set(module.specifier, moduleEdges);
+    for (const dependency of module.dependencies) {
+      if (dependency.resolved === undefined) continue;
+      const target = npmTarget(dependency.specifier, dependency.resolved, importAliases, aliases) ??
+        targets.get(dependency.resolved) ?? null;
+      if (target !== null) moduleEdges.set(dependency.specifier, target);
     }
   }
 
-  const specifiers = new SpecifierIndex({
-    vendored: vendoredBySpecifier,
-    vendorCopies: vendorCopyBySpecifier,
-    localAliases: localBySpecifier,
-    aliases,
-    replacedJsrPackages,
-    npmDeps,
-  });
-
+  const npmDepsRecord = Object.fromEntries(npmDeps);
+  const vendorSources = new Map<string, string>([
+    ...[...vendoredCode].map(([url, { src }]) => [url, src] as const),
+    ...vendoredCopies,
+  ]);
+  const specifiers = new SpecifierIndex({ edges, aliases, vendorSources, npmDeps: npmDepsRecord });
   validateSpecifiers(reachable, specifiers);
 
-  return { plan, srcRoot, localFiles, localCopies, vendoredCode, vendoredCopies, vendoredAssets, npmDeps, specifiers };
+  return {
+    plan,
+    srcRoot,
+    localFiles: [...localFiles],
+    localCopies: [...localCopies],
+    vendoredCode,
+    vendoredCopies,
+    sourceByOutput,
+    npmDeps: npmDepsRecord,
+    specifiers,
+  };
 }
 
-/**
- * The fate of one module from its origin and media type.
- *
- * @throws {BuildError} `MODULE_LOAD_FAILED` when the module carries a load error.
- * @throws {BuildError} `UNSUPPORTED_LOCAL_SOURCE` for a local source whose media type the engine does not handle.
- * @throws {BuildError} `UNSUPPORTED_VENDORED_DEPENDENCY` for a vendored dependency the engine cannot inline (an
- *                       unsupported media type, or a hostless URL like `data:`).
- */
-function fateOf(module: RawModule, replacedJsrPackages: Map<string, string>, depsDir: string): Fate {
+/** Classifies one graph module without inspecting its outgoing edges. */
+function fateOf(module: RawModule, depsDir: string): Fate {
+  const media = module.mediaType;
   if (module.specifier.startsWith("file://")) {
     const path = fromFileUrl(module.specifier);
-    if (module.error !== undefined) throw new BuildError("MODULE_LOAD_FAILED", module.error, path);
-    if (module.mediaType === "TypeScript") return { kind: "transpile", path };
-    if (COPY_MEDIA.has(module.mediaType ?? "")) return { kind: "copy", path };
-    throw new BuildError(
-      "UNSUPPORTED_LOCAL_SOURCE",
-      `local source has unsupported media type ${module.mediaType}; expected .ts .js .mjs .cjs .json .d.ts`,
-      path,
-    );
+    if (module.error !== undefined) {
+      throw new BuildError("DEPENDENCY_FAILED", module.error, { subject: path });
+    }
+    if (media === "TypeScript" || media === "Mts") return { kind: "transpile", path };
+    if (media !== undefined && COPY_MEDIA.has(media)) return { kind: "copy", path };
+    throw new BuildError("UNSUPPORTED_MODULE", `local module has unsupported media type ${media}`, { subject: path });
   }
 
-  // Classified before the load-error check below: @deno/graph stamps an error on every npm: node, so checking error
-  // first would wrongly fail every external dependency.
   if (module.specifier.startsWith("npm:")) {
     const npm = parseRegistry(module.specifier);
     return { kind: "external", npm: npm === null ? null : { name: npm.pkg, version: npm.version ?? "*" } };
   }
   if (module.specifier.startsWith("node:")) return { kind: "external", npm: null };
 
-  const pkg = jsrUrlPackage(module.specifier);
-  if (pkg !== null && replacedJsrPackages.has(pkg)) return { kind: "external", npm: null };
-
-  if (module.error !== undefined) throw new BuildError("MODULE_LOAD_FAILED", module.error, module.specifier);
-  // A vendored module mirrors its remote `host + pathname` under `_deps`; a hostless URL (e.g. `data:`) has neither.
-  if (new URL(module.specifier).host === "") {
-    throw new BuildError(
-      "UNSUPPORTED_VENDORED_DEPENDENCY",
-      `a remote dependency without a host cannot be vendored`,
-      module.specifier,
-    );
+  if (module.error !== undefined) {
+    throw new BuildError("DEPENDENCY_FAILED", module.error, { subject: module.specifier });
   }
-  const rel = vendoredRel(module.specifier, depsDir);
-  if (module.mediaType === "TypeScript") return { kind: "vendorCode", url: module.specifier, rel: tsToJs(rel) };
-  if (VENDOR_COPY_MEDIA.has(module.mediaType ?? "")) return { kind: "vendorCopy", url: module.specifier, rel };
-  if (ASSET_MEDIA.has(module.mediaType ?? "")) return { kind: "vendorAsset", url: module.specifier, rel };
-  throw new BuildError(
-    "UNSUPPORTED_VENDORED_DEPENDENCY",
-    `vendored dependency has unsupported media type ${module.mediaType}; expected .ts, .js, or JSON/Wasm`,
-    module.specifier,
-  );
+  if (media === "TypeScript" || media === "Mts") {
+    const src = vendoredRel(module.specifier, depsDir, media);
+    return { kind: "vendorCode", url: module.specifier, src, emit: tsToJs(src) };
+  }
+  if (media !== undefined && VENDOR_COPY_MEDIA.has(media)) {
+    return {
+      kind: "vendorCopy",
+      url: module.specifier,
+      rel: vendoredRel(module.specifier, depsDir, media as "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts" | "Json"),
+    };
+  }
+  throw new BuildError("UNSUPPORTED_MODULE", `remote module has unsupported media type ${media}`, {
+    subject: module.specifier,
+  });
 }
 
-/**
- * Fails the build if any specifier cannot be made Node-resolvable — before a single file is written.
- *
- * @throws {BuildError} `REPLACEMENT_DIRECT_IMPORT` when local code imports a replaced package directly.
- * @throws {BuildError} `UNRESOLVED_SPECIFIER` when a specifier resolves to neither a vendored file nor an npm package.
- */
-function validateSpecifiers(reachable: Array<{ module: RawModule }>, specifiers: SpecifierIndex): void {
+/** Resolves an external edge to its npm package form. */
+function npmTarget(
+  written: string,
+  resolved: string,
+  importAliases: string[],
+  aliases: AliasBinding[],
+): SpecTarget | null {
+  const alias = matchingAlias(written, importAliases);
+  if (alias !== null) {
+    const binding = aliases.find((candidate) => candidate.alias === alias);
+    if (binding !== undefined) {
+      const subpath = binding.subpath + written.slice(alias.length);
+      return {
+        kind: "npm",
+        bare: binding.npmName + subpath,
+        registry: `npm:${binding.npmName}@${binding.version}${subpath}`,
+      };
+    }
+  }
+
+  const registry = parseRegistry(resolved);
+  if (registry?.scheme === "npm") {
+    return {
+      kind: "npm",
+      bare: registry.pkg + registry.subpath,
+      registry: `npm:${registry.pkg}@${registry.version ?? "*"}${registry.subpath}`,
+    };
+  }
+  return null;
+}
+
+/** The exact or longest-prefix Deno package alias matching a written specifier. */
+function matchingAlias(specifier: string, aliases: string[]): string | null {
+  if (aliases.includes(specifier)) return specifier;
+  return aliases.find((alias) => specifier.startsWith(alias.endsWith("/") ? alias : `${alias}/`)) ?? null;
+}
+
+/** Fails before output is removed when a graph edge has no supported package target. */
+function validateSpecifiers(
+  reachable: Array<{ module: RawModule; fate: Exclude<Fate, { kind: "external" }> }>,
+  specifiers: SpecifierIndex,
+): void {
   for (const { module } of reachable) {
-    const local = module.specifier.startsWith("file://");
-    for (const d of module.dependencies) {
-      if (isRelative(d.specifier)) continue;
-
-      if (local) {
-        const conflict = specifiers.replacedJsrConflict(d.specifier);
-        if (conflict !== null) {
-          throw new BuildError(
-            "REPLACEMENT_DIRECT_IMPORT",
-            `replaced package "${conflict}" imported directly; import it through its import-map alias instead`,
-            d.specifier,
-          );
-        }
-      }
-
-      if (specifiers.resolve(d.specifier) !== null) continue;
-      if (d.specifier.startsWith("node:")) continue;
-      throw new BuildError(
-        "UNRESOLVED_SPECIFIER",
-        `specifier resolves to neither a vendored file nor an npm package`,
-        d.specifier,
-      );
+    for (const dependency of module.dependencies) {
+      if (specifiers.resolve(module.specifier, dependency.specifier) !== null) continue;
+      if (dependency.specifier.startsWith("node:")) continue;
+      throw new BuildError("DEPENDENCY_FAILED", "specifier has no supported package target", {
+        subject: dependency.specifier,
+      });
     }
   }
 }
 
-// ── Specifier index ─────────────────────────────────────────────────────────
+// =============================================================================
+// Specifier index
+// =============================================================================
 
-/** Where a non-relative specifier points once the package is built. */
-type SpecTarget =
-  | { kind: "vendored"; rel: string } // package-relative `.js` path of the inlined (transpiled) file
-  | { kind: "vendoredCopy"; rel: string } // package-relative path of a remote module (JavaScript or `.d.ts`) copied verbatim
-  | { kind: "local"; rel: string } // package-relative `.js` path of a local file reached via an import-map alias
-  | { kind: "npm"; bare: string }; // npm package name with its subpath, e.g. `valibot` or `@std/x/sub`
-
-/** An import-map alias bound to an npm package, split so both the bare name and a `npm:` specifier can be rebuilt. */
-interface AliasBinding {
-  alias: string;
-  npmName: string;
-  /** The alias's own subpath (from its import specifier), with a leading slash, or `""`. */
-  subpath: string;
-  /** Version range for the `npm:` form used by the declaration pass. */
-  version: string;
-}
-
-/** Everything {@linkcode SpecifierIndex} needs, assembled by `analyze`. */
+/** Constructor data for {@linkcode SpecifierIndex}. */
 interface SpecifierIndexInput {
-  /** Specifier as written → vendored (transpiled) `.js` path under the code root. */
-  vendored: Map<string, string>;
-  /** Specifier as written → a remote JavaScript or `.d.ts` module's copied path under the code root. Default: none. */
-  vendorCopies?: Map<string, string>;
-  /**
-   * Import-map alias pointing at a local file → that file's package-relative `.js` path (`rel`) and its real source URL
-   * (`source`, for the declaration pass to type-check against).
-   */
-  localAliases?: Map<string, { rel: string; source: string }>;
-  /** Alias bindings, for both replaced jsr packages and direct `npm:` imports. */
+  edges?: Map<string, Map<string, SpecTarget>>;
   aliases: AliasBinding[];
-  /** Replaced jsr package (`@scope/name`) → npm name, for detecting forbidden direct imports. */
-  replacedJsrPackages: Map<string, string>;
-  /** Every npm dependency name → version range (incl. ones discovered only transitively inside vendored code). */
+  vendorSources?: Map<string, string>;
   npmDeps: Record<string, string>;
 }
 
-/**
- * Resolves each non-relative specifier to what it becomes in the built package — a vendored file, a local file reached
- * via an import-map alias, or a bare npm name — and builds the import maps the declaration passes need.
- */
+/** Resolves module specifiers by graph edge and builds the two declaration-pass import maps. */
 export class SpecifierIndex {
-  readonly #vendored: Map<string, string>;
-  readonly #vendorCopies: Map<string, string>;
-  readonly #localAliases: Map<string, { rel: string; source: string }>;
-  readonly #aliases: AliasBinding[];
-  readonly #replacedJsrPackages: Map<string, string>;
-  readonly #npmDeps: Record<string, string>;
+  private readonly _edges: Map<string, Map<string, SpecTarget>>;
+  private readonly _aliases: AliasBinding[];
+  private readonly _vendorSources: Map<string, string>;
+  private readonly _npmDeps: Record<string, string>;
 
   constructor(input: SpecifierIndexInput) {
-    this.#vendored = input.vendored;
-    this.#vendorCopies = input.vendorCopies ?? new Map();
-    this.#localAliases = input.localAliases ?? new Map();
-    // Longest alias first, so `@std/encoding/hex` wins over `@std/encoding`.
-    this.#aliases = [...input.aliases].sort((a, b) => b.alias.length - a.alias.length);
-    this.#replacedJsrPackages = input.replacedJsrPackages;
-    this.#npmDeps = input.npmDeps;
+    this._edges = input.edges ?? new Map();
+    this._aliases = input.aliases;
+    this._vendorSources = input.vendorSources ?? new Map();
+    this._npmDeps = input.npmDeps;
   }
 
-  /**
-   * Resolves a non-relative specifier to its package target, or `null` when it needs no rewriting (e.g. `node:`
-   * builtins). Relative specifiers are not handled here — the rewriter swaps their extension directly.
-   *
-   * @example
-   * ```ts
-   * const index = new SpecifierIndex({
-   *   vendored: new Map([["@scope/local", "_deps/esm.sh/local/1.0.0/mod.js"]]),
-   *   aliases: [{ alias: "@valibot/valibot", npmName: "valibot", subpath: "", version: "1" }],
-   *   replacedJsrPackages: new Map(),
-   *   npmDeps: {},
-   * });
-   *
-   * // An import-map alias becomes its real npm name, with the remaining subpath appended:
-   * index.resolve("@valibot/valibot/schemas");
-   * // -> { kind: "npm", bare: "valibot/schemas" }
-   *
-   * // A raw npm: specifier is parsed — even one the index never saw (chalk); the scheme and version are dropped:
-   * index.resolve("npm:chalk@^5/foo");
-   * // -> { kind: "npm", bare: "chalk/foo" }
-   *
-   * // A written specifier bound to a vendored dependency is looked up to its inlined path:
-   * index.resolve("@scope/local");
-   * // -> { kind: "vendored", rel: "_deps/esm.sh/local/1.0.0/mod.js" }
-   * ```
-   */
-  resolve(specifier: string): SpecTarget | null {
-    const vendored = this.#vendored.get(specifier);
-    if (vendored !== undefined) return { kind: "vendored", rel: vendored };
+  /** Resolves the specifier written by one concrete graph referrer. */
+  resolve(referrer: string, specifier: string): SpecTarget | null {
+    return this._edges.get(referrer)?.get(specifier) ?? null;
+  }
 
-    const vendoredCopy = this.#vendorCopies.get(specifier);
-    if (vendoredCopy !== undefined) return { kind: "vendoredCopy", rel: vendoredCopy };
-
-    const local = this.#localAliases.get(specifier);
-    if (local !== undefined) return { kind: "local", rel: local.rel };
-
-    for (const { alias, npmName, subpath } of this.#aliases) {
-      if (specifier === alias) return { kind: "npm", bare: npmName + subpath };
-      const prefix = alias.endsWith("/") ? alias : `${alias}/`;
-      if (specifier.startsWith(prefix)) {
-        return { kind: "npm", bare: npmName + subpath + specifier.slice(alias.length) };
+  /** Import map used while declarations are emitted from local sources. */
+  declarationImportMap(): DeclarationImportMap {
+    const map = new Map<string, string>();
+    for (const { alias, npmName, subpath, version } of this._aliases) {
+      map.set(alias, `npm:${npmName}@${version}${subpath}`);
+    }
+    for (const [referrer, edges] of this._edges) {
+      if (!referrer.startsWith("file://")) continue;
+      for (const [specifier, target] of edges) {
+        if (target.kind === "npm" && !specifier.startsWith("npm:")) map.set(specifier, target.registry);
+        if (!isRelative(specifier) && target.kind === "vendored" && !map.has(specifier)) {
+          map.set(specifier, `./${target.src}`);
+        }
       }
     }
-
-    const reg = parseRegistry(specifier);
-    if (reg !== null) {
-      if (reg.scheme === "npm") return { kind: "npm", bare: reg.pkg + reg.subpath };
-      // A directly-written jsr specifier for a replaced package: rewritten to npm. Legitimate only inside vendored
-      // third-party code; for local code this is a contract error caught earlier by `replacedJsrConflict`.
-      const npmName = this.#replacedJsrPackages.get(reg.pkg);
-      if (npmName !== undefined) return { kind: "npm", bare: npmName + reg.subpath };
-    }
-
-    return null;
+    return { imports: Object.fromEntries(map), scopes: this._vendorScopes() };
   }
 
-  /**
-   * The npm name a directly-written jsr specifier collides with, or `null`. A non-null result is a contract error.
-   *
-   * @example
-   * ```ts
-   * const index = new SpecifierIndex({
-   *   vendored: new Map(),
-   *   aliases: [],
-   *   replacedJsrPackages: new Map([["@valibot/valibot", "valibot"]]),
-   *   npmDeps: {},
-   * });
-   *
-   * // A replaced package imported by its raw jsr specifier -> its npm name (forbidden in local code):
-   * index.replacedJsrConflict("jsr:@valibot/valibot@1");
-   * // -> "valibot"
-   *
-   * // An unreplaced package, or a non-jsr specifier -> null:
-   * index.replacedJsrConflict("jsr:@std/encoding");
-   * // -> null
-   * ```
-   */
-  replacedJsrConflict(specifier: string): string | null {
-    const parsed = parseRegistry(specifier);
-    const pkg = (parsed?.scheme === "jsr" ? parsed.pkg : null) ?? jsrUrlPackage(specifier);
-    return pkg === null ? null : (this.#replacedJsrPackages.get(pkg) ?? null);
+  /** Import map used while declarations are emitted from vendored remote sources. */
+  vendorImportMap(): DeclarationImportMap {
+    const map = new Map(Object.entries(this._npmDeps).map(([name, version]) => [name, `npm:${name}@${version}`]));
+    return { imports: Object.fromEntries(map), scopes: this._vendorScopes() };
   }
 
-  /**
-   * Import map for the local declaration pass: every non-relative specifier a local source may write, mapped to a
-   * local `.ts` (vendored), the real source URL (a local-file alias), or a `npm:` specifier (replaced/direct), so the
-   * type-checker never hits a remote URL.
-   *
-   * @example
-   * ```ts
-   * const index = new SpecifierIndex({
-   *   vendored: new Map([["@remote/x", "_deps/esm.sh/x/1.0.0/mod.js"]]),
-   *   localAliases: new Map([["$u", { rel: "util.js", source: "file:///repo/src/util.ts" }]]),
-   *   aliases: [{ alias: "@valibot/valibot", npmName: "valibot", subpath: "", version: "1" }],
-   *   replacedJsrPackages: new Map(),
-   *   npmDeps: {},
-   * });
-   *
-   * index.declarationImportMap();
-   * // -> {
-   * //   "@valibot/valibot": "npm:valibot@1",
-   * //   "@remote/x": "./_deps/esm.sh/x/1.0.0/mod.ts",
-   * //   "$u": "file:///repo/src/util.ts",
-   * // }
-   * ```
-   */
-  declarationImportMap(): Record<string, string> {
-    const map: Record<string, string> = {};
-    for (const { alias, npmName, subpath, version } of this.#aliases) {
-      map[alias] = `npm:${npmName}@${version}${subpath}`;
+  /** Per-source npm mappings for staged vendored modules. */
+  private _vendorScopes(): Record<string, Record<string, string>> {
+    const scopes = new Map<string, Record<string, string>>();
+    for (const [referrer, edges] of this._edges) {
+      const source = this._vendorSources.get(referrer);
+      if (source === undefined) continue;
+      const imports = new Map<string, string>();
+      for (const target of edges.values()) {
+        if (target.kind === "npm") imports.set(target.bare, target.registry);
+      }
+      if (imports.size > 0) scopes.set(`./${source}`, Object.fromEntries(imports));
     }
-    for (const [specifier, rel] of this.#vendored) {
-      map[specifier] ??= `./${jsToTs(rel)}`;
-    }
-    for (const [specifier, rel] of this.#vendorCopies) {
-      // A copied `.js`/`.d.ts` is its own source — point at it as-is, never `jsToTs`'d to a `.ts` that does not exist.
-      map[specifier] ??= `./${rel}`;
-    }
-    for (const [specifier, { source }] of this.#localAliases) {
-      map[specifier] ??= source;
-    }
-    return map;
-  }
-
-  /**
-   * Import map for the vendored declaration pass: every npm dependency name → its `npm:` specifier, so vendored
-   * third-party code keeps types even for bare npm imports discovered only transitively.
-   *
-   * @example
-   * ```ts
-   * const index = new SpecifierIndex({
-   *   vendored: new Map(),
-   *   aliases: [],
-   *   replacedJsrPackages: new Map(),
-   *   npmDeps: { valibot: "1.3.1", chalk: "^5" },
-   * });
-   *
-   * index.vendorImportMap();
-   * // -> { valibot: "npm:valibot@1.3.1", chalk: "npm:chalk@^5" }
-   * ```
-   */
-  vendorImportMap(): Record<string, string> {
-    const map: Record<string, string> = {};
-    for (const [name, version] of Object.entries(this.#npmDeps)) {
-      map[name] = `npm:${name}@${version}`;
-    }
-    return map;
+    return Object.fromEntries(scopes);
   }
 }

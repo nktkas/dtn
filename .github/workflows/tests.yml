@@ -1,6 +1,8 @@
 name: Tests
 on:
+  pull_request:
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   quality:
@@ -8,19 +10,34 @@ jobs:
 
   test:
     needs: quality
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.deno }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        deno: [v2.x, v2.9.x]
 
     steps:
       - uses: actions/checkout@v6
       - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ matrix.deno }}
 
       - name: deno test (with coverage)
-        env:
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        if: matrix.os == 'ubuntu-latest' && matrix.deno == 'v2.x'
         run: deno task test:integration --coverage --coverage-raw-data-only
 
+      - name: deno test
+        if: matrix.os != 'ubuntu-latest' || matrix.deno != 'v2.x'
+        run: deno task test:integration
+
       - name: Create coverage report
+        if: matrix.os == 'ubuntu-latest' && matrix.deno == 'v2.x'
         run: deno coverage --exclude=./tests --lcov --output=cov.lcov
 
       - name: Upload coverage to Coveralls.io
+        if: matrix.os == 'ubuntu-latest' && matrix.deno == 'v2.x' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
         uses: coverallsapp/github-action@v2

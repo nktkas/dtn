@@ -1,9 +1,16 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for package metadata derived from analyzed build plans.
+ *
+ * @module
+ */
+
 import { assertEquals } from "jsr:@std/assert@1";
 import { resolve, toFileUrl } from "jsr:@std/path@^1";
 import type { PackageJson } from "type-fest";
 import { type Analysis, analyze } from "../src/analyze.ts";
-import type { RawDependency, RawGraph, RawModule } from "../src/graph.ts";
+import type { RawDependency, RawGraph, RawMediaType, RawModule } from "../src/graph.ts";
 import type { Plan } from "../src/intake.ts";
 import { planPackageJson } from "../src/pkg.ts";
 
@@ -20,7 +27,6 @@ function plan(exports: Record<string, string>, packageJson: PackageJson = {}): P
     npmReplacements: {},
     packageJson,
     copyFiles: [],
-    sourceMap: "separate",
     depsDir: "_deps",
   };
 }
@@ -33,7 +39,7 @@ function dep(specifier: string, resolved: string | undefined): RawDependency {
   return { specifier, resolved };
 }
 
-function mod(specifier: string, mediaType: string | undefined, deps: RawDependency[] = []): RawModule {
+function mod(specifier: string, mediaType: RawMediaType | undefined, deps: RawDependency[] = []): RawModule {
   return { specifier, mediaType, error: undefined, dependencies: deps };
 }
 
@@ -41,15 +47,10 @@ function graph(modules: RawModule[]): RawGraph {
   return { modules, readSource: () => Promise.reject(new Error("readSource is not used by analyze")) };
 }
 
-// Build the Analysis from the REAL analyze() over a synthetic graph, so srcRoot (and every path derived from it) is the
-// engine's own value — the helper can never fabricate a wrong one. Each entry source is a leaf module; npm deps are
-// injected through the import map, where analyze derives them. Cases with non-entry local deps build the graph directly.
 function analysis(p: Plan, npmDeps: Record<string, string> = {}): Analysis {
   const imports: Record<string, string> = {};
   for (const [name, range] of Object.entries(npmDeps)) imports[name] = `npm:${name}@${range}`;
-  const modules = Object.values(p.exports).map((src) =>
-    mod(fileUrl(src), src.endsWith(".d.ts") ? "Dts" : "TypeScript")
-  );
+  const modules = Object.values(p.exports).map((src) => mod(fileUrl(src), "TypeScript"));
   return analyze({ ...p, imports }, graph(modules));
 }
 
@@ -91,13 +92,6 @@ Deno.test("planPackageJson", async (t) => {
     assertEquals(pkg.license, "MIT");
   });
 
-  await t.step("a .d.ts-only entry yields { types } with no default and no root main", () => {
-    const pkg = planPackageJson(analysis(plan({ ".": "./src/types.d.ts" })));
-    assertEquals(pkg.exports, { ".": { types: "./esm/types.d.ts" } });
-    assertEquals("main" in pkg, false);
-    assertEquals(pkg.types, "./esm/types.d.ts");
-  });
-
   await t.step("no dependencies key when npmDeps is empty", () => {
     const pkg = planPackageJson(analysis(plan({ ".": "./src/mod.ts" })));
     assertEquals("dependencies" in pkg, false);
@@ -120,10 +114,8 @@ Deno.test("planPackageJson", async (t) => {
   });
 
   await t.step(
-    "srcRoot accounts for a non-entry local dep above the entry dir (real analyze, not exports-only)",
+    "entry output remains nested when a reachable dependency is above the entry directory",
     () => {
-      // Entry src/deep/mod.ts imports ../shared.ts. The engine's srcRoot is the common ancestor of ALL local files
-      // (/repo/src), so the `.` entry's path keeps its `deep/` segment. An exports-only srcRoot would wrongly drop it.
       const p = plan({ ".": "./src/deep/mod.ts" });
       const a = analyze(
         { ...p, imports: {} },
@@ -132,15 +124,12 @@ Deno.test("planPackageJson", async (t) => {
           mod(fileUrl("src/shared.ts"), "TypeScript"),
         ]),
       );
-      assertEquals(a.srcRoot, "/repo/src");
       const exports = planPackageJson(a).exports as Record<string, unknown>;
       assertEquals(exports["."], { types: "./esm/deep/mod.d.ts", default: "./esm/deep/mod.js" });
     },
   );
 
-  await t.step("a `.ts` segment before the final extension survives (the types regex is end-anchored)", () => {
-    // With two entries srcRoot is /repo/src, so the `.` entry's package-relative path is `v1.ts.bak/mod.ts`. Only the
-    // TRAILING `.ts` may become `.d.ts`; the `.ts` inside the `v1.ts.bak` directory segment must stay verbatim.
+  await t.step("a `.ts` segment before the final extension survives in runtime and declaration paths", () => {
     const pkg = planPackageJson(analysis(plan({ ".": "./src/v1.ts.bak/mod.ts", "./other": "./src/other.ts" })));
     assertEquals((pkg.exports as Record<string, unknown>)["."], {
       types: "./esm/v1.ts.bak/mod.d.ts",

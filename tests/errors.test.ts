@@ -1,19 +1,21 @@
 // deno-lint-ignore-file no-import-prefix
-import { assertEquals } from "jsr:@std/assert@1";
+
+/**
+ * Unit tests for the `BuildError` subject and cause contract.
+ *
+ * @module
+ */
+
+import { assertEquals, assertStrictEquals } from "jsr:@std/assert@1";
 import { BuildError } from "../src/errors.ts";
 
-Deno.test("BuildError", async (t) => {
-  await t.step("stores code and message without a subject", () => {
-    const e = new BuildError("INVALID_EXPORTS", "no exports to build from");
-    assertEquals(e.code, "INVALID_EXPORTS");
-    assertEquals(e.subject, undefined);
-    assertEquals(e.message, "no exports to build from");
+Deno.test("BuildError appends the subject and preserves the original cause", () => {
+  const cause = new Error("cache failed");
+  const error = new BuildError("DEPENDENCY_FAILED", "cannot load module", {
+    subject: "jsr:@x/y",
+    cause,
   });
-
-  await t.step("appends the subject to the message in parentheses", () => {
-    const e = new BuildError("UNRESOLVED_SPECIFIER", "specifier resolves to nothing", "jsr:@x/y");
-    assertEquals(e.code, "UNRESOLVED_SPECIFIER");
-    assertEquals(e.subject, "jsr:@x/y");
-    assertEquals(e.message, "specifier resolves to nothing (jsr:@x/y)");
-  });
+  assertEquals(error.subject, "jsr:@x/y");
+  assertEquals(error.message, "cannot load module (jsr:@x/y)");
+  assertStrictEquals(error.cause, cause);
 });

@@ -1,14 +1,22 @@
 // deno-lint-ignore-file no-import-prefix
+
+/**
+ * Unit tests for graph classification, edge bindings, media policy, and dependency errors.
+ *
+ * @module
+ */
+
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { analyze } from "../src/analyze.ts";
 import { BuildError } from "../src/errors.ts";
-import type { RawDependency, RawGraph, RawModule } from "../src/graph.ts";
+import type { RawDependency, RawGraph, RawMediaType, RawModule } from "../src/graph.ts";
 import type { Plan } from "../src/intake.ts";
+import { tsToJs, vendoredRel } from "../src/spec.ts";
 
 const REPO = "/repo";
 
 function plan(
-  exports: Record<string, string>,
+  exports: Record<string, string> = { ".": "./src/mod.ts" },
   imports: Record<string, string> = {},
   npmReplacements: Record<string, string> = {},
   depsDir = "_deps",
@@ -25,401 +33,542 @@ function plan(
     npmReplacements,
     packageJson: {},
     copyFiles: [],
-    sourceMap: "separate",
     depsDir,
   };
 }
 
-function fileUrl(rel: string): string {
-  return `file://${REPO}/${rel}`;
+function fileUrl(path: string): string {
+  return `file://${REPO}/${path}`;
 }
 
-function mod(specifier: string, mediaType: string | undefined, deps: RawDependency[], error?: string): RawModule {
-  return { specifier, mediaType, error, dependencies: deps };
-}
-
-function dep(specifier: string, resolved: string | undefined): RawDependency {
+function dependency(specifier: string, resolved: string | undefined): RawDependency {
   return { specifier, resolved };
 }
 
-// analyze never calls readSource (that is the vendor stage); a rejecting stub guards against accidental use.
+function module(
+  specifier: string,
+  mediaType: RawMediaType | undefined,
+  dependencies: RawDependency[] = [],
+  error?: string,
+): RawModule {
+  return { specifier, mediaType, dependencies, error };
+}
+
 function graph(modules: RawModule[]): RawGraph {
-  return { modules, readSource: () => Promise.reject(new Error("readSource is not used by analyze")) };
+  return { modules, readSource: () => Promise.reject(new Error("analyze does not read source")) };
 }
 
-function sorted(xs: string[]): string[] {
-  return [...xs].sort();
+function throwsCode(modules: RawModule[], code: string): BuildError {
+  const error = assertThrows(() => analyze(plan(), graph(modules)), BuildError);
+  assertEquals(error.code, code);
+  return error;
 }
 
-function throwsCode(fn: () => unknown, code: string): void {
-  const e = assertThrows(fn, BuildError);
-  assertEquals((e as BuildError).code, code);
-}
-
-Deno.test("analyze — classifies a representative graph", async (t) => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [
-      dep("./util.ts", fileUrl("src/util.ts")),
-      dep("./data.json", fileUrl("src/data.json")),
-      dep("npm:chalk@^5", "npm:chalk@^5"),
-      dep("node:fs", "node:fs"),
-      dep("jsr:@std/encoding@1.0.0/hex", "https://jsr.io/@std/encoding/1.0.0/hex.ts"),
+Deno.test("analyze — representative local, npm, and JSR graph", () => {
+  const root = fileUrl("src/mod.ts");
+  const util = fileUrl("src/util.ts");
+  const legacy = fileUrl("src/legacy.js");
+  const remote = "https://jsr.io/@std/encoding/1.0.0/hex.ts";
+  const analysis = analyze(
+    plan({}, { hex: "jsr:@std/encoding@1.0.0/hex", chalk: "npm:chalk@^5" }),
+    graph([
+      module(root, "TypeScript", [
+        dependency("./util.ts", util),
+        dependency("./legacy.js", legacy),
+        dependency("hex", remote),
+        dependency("chalk", "npm:chalk@^5"),
+        dependency("node:fs", "node:fs"),
+      ]),
+      module(util, "TypeScript"),
+      module(legacy, "JavaScript"),
+      module(remote, "TypeScript"),
+      module("npm:chalk@^5", undefined, [], "load rejected or errored"),
+      module("node:fs", undefined),
     ]),
-    mod(fileUrl("src/util.ts"), "TypeScript", []),
-    mod(fileUrl("src/data.json"), "Json", []),
-    mod("npm:chalk@^5", undefined, [], "load rejected or errored"),
-    mod("node:fs", undefined, []),
-    mod("https://jsr.io/@std/encoding/1.0.0/hex.ts", "TypeScript", [
-      dep("./_common.ts", "https://jsr.io/@std/encoding/1.0.0/_common.ts"),
-    ]),
-    mod("https://jsr.io/@std/encoding/1.0.0/_common.ts", "TypeScript", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
+  );
 
-  await t.step("local .ts → transpile, local .json → copy", () => {
-    assertEquals(sorted(a.localFiles), ["/repo/src/mod.ts", "/repo/src/util.ts"]);
-    assertEquals(a.localCopies, ["/repo/src/data.json"]);
+  assertEquals([...analysis.localFiles].sort(), ["/repo/src/mod.ts", "/repo/src/util.ts"]);
+  assertEquals(analysis.localCopies, ["/repo/src/legacy.js"]);
+  assertEquals(analysis.srcRoot, "/repo/src");
+  assertEquals(analysis.npmDeps, { chalk: "^5" });
+
+  const src = vendoredRel(remote, "_deps", "TypeScript");
+  assertEquals(analysis.vendoredCode, new Map([[remote, { src, emit: tsToJs(src) }]]));
+  assertEquals(analysis.specifiers.resolve(root, "hex"), { kind: "vendored", src, emit: tsToJs(src) });
+  assertEquals(analysis.specifiers.resolve(root, "./util.ts"), { kind: "local", emit: "util.js", suffix: "" });
+  assertEquals(analysis.specifiers.resolve(root, "chalk"), {
+    kind: "npm",
+    bare: "chalk",
+    registry: "npm:chalk@^5",
+  });
+  assertEquals(analysis.specifiers.resolve(root, "node:fs"), null);
+});
+
+Deno.test("analyze — bindings are edge-aware for identical written specifiers", () => {
+  const root = fileUrl("src/mod.ts");
+  const a = "https://jsr.io/@scope/a/1/mod.ts";
+  const b = "https://jsr.io/@scope/b/1/mod.ts";
+  const aShared = "https://jsr.io/@scope/a/1/shared.ts";
+  const bShared = "https://jsr.io/@scope/b/1/shared.ts";
+  const analysis = analyze(
+    plan(),
+    graph([
+      module(root, "TypeScript", [dependency("jsr:@scope/a@1", a), dependency("jsr:@scope/b@1", b)]),
+      module(a, "TypeScript", [dependency("./shared.ts", aShared)]),
+      module(b, "TypeScript", [dependency("./shared.ts", bShared)]),
+      module(aShared, "TypeScript"),
+      module(bShared, "TypeScript"),
+    ]),
+  );
+
+  const aSrc = vendoredRel(aShared, "_deps", "TypeScript");
+  const bSrc = vendoredRel(bShared, "_deps", "TypeScript");
+  assertEquals(analysis.specifiers.resolve(a, "./shared.ts"), {
+    kind: "vendored",
+    src: aSrc,
+    emit: tsToJs(aSrc),
+  });
+  assertEquals(analysis.specifiers.resolve(b, "./shared.ts"), {
+    kind: "vendored",
+    src: bSrc,
+    emit: tsToJs(bSrc),
+  });
+});
+
+Deno.test("analyze — a local query-bearing edge keeps URL identity while sharing its artifact", () => {
+  const root = fileUrl("src/mod.ts");
+  const queried = `${fileUrl("src/util.ts")}?mode=test`;
+  const analysis = analyze(
+    plan(),
+    graph([
+      module(root, "TypeScript", [dependency("./util.ts?mode=test", queried)]),
+      module(queried, "TypeScript"),
+    ]),
+  );
+  assertEquals(analysis.specifiers.resolve(root, "./util.ts?mode=test"), {
+    kind: "local",
+    emit: "util.js",
+    suffix: "?mode=test",
+  });
+});
+
+Deno.test("analyze — supported media", async (t) => {
+  await t.step("local and remote MTS use MJS artifacts", () => {
+    const root = fileUrl("src/mod.ts");
+    const local = fileUrl("src/value.mts");
+    const remote = "https://example.com/value.mts";
+    const analysis = analyze(
+      plan(),
+      graph([
+        module(root, "TypeScript", [
+          dependency("./value.mts", local),
+          dependency(remote, remote),
+        ]),
+        module(local, "Mts"),
+        module(remote, "Mts"),
+      ]),
+    );
+
+    const remoteSrc = vendoredRel(remote, "_deps", "Mts");
+    assertEquals([...analysis.localFiles].sort(), ["/repo/src/mod.ts", "/repo/src/value.mts"]);
+    assertEquals(analysis.vendoredCode, new Map([[remote, { src: remoteSrc, emit: tsToJs(remoteSrc) }]]));
+    assertEquals(analysis.specifiers.resolve(root, "./value.mts"), {
+      kind: "local",
+      emit: "value.mjs",
+      suffix: "",
+    });
+    assertEquals(analysis.sourceByOutput.get("value.d.mts"), local);
   });
 
-  await t.step("remote .ts (and its transitive .ts) → vendored code", () => {
+  await t.step("local JavaScript, MJS, JSON, and declaration dependencies are copied", () => {
+    const root = fileUrl("src/mod.ts");
+    const files = [
+      fileUrl("src/a.js"),
+      fileUrl("src/b.mjs"),
+      fileUrl("src/data.json"),
+      fileUrl("src/types.d.ts"),
+      fileUrl("src/types.d.mts"),
+      fileUrl("src/types.d.cts"),
+    ];
+    const analysis = analyze(
+      plan(),
+      graph([
+        module(root, "TypeScript", [
+          dependency("./a.js", files[0]),
+          dependency("./b.mjs", files[1]),
+          dependency("./data.json", files[2]),
+          dependency("./types.d.ts", files[3]),
+          dependency("./types.d.mts", files[4]),
+          dependency("./types.d.cts", files[5]),
+        ]),
+        module(files[0], "JavaScript"),
+        module(files[1], "Mjs"),
+        module(files[2], "Json"),
+        module(files[3], "Dts"),
+        module(files[4], "Dmts"),
+        module(files[5], "Dcts"),
+      ]),
+    );
+    assertEquals([...analysis.localCopies].sort(), [
+      "/repo/src/a.js",
+      "/repo/src/b.mjs",
+      "/repo/src/data.json",
+      "/repo/src/types.d.cts",
+      "/repo/src/types.d.mts",
+      "/repo/src/types.d.ts",
+    ]);
+  });
+
+  await t.step("remote JavaScript, MJS, JSON, and declarations retain media-specific artifacts", () => {
+    const root = fileUrl("src/mod.ts");
+    const js = "https://jsr.io/@scope/pkg/1/a";
+    const mjs = "https://jsr.io/@scope/pkg/1/b";
+    const json = "https://example.com/data.json";
+    const dts = "https://jsr.io/@scope/pkg/1/types";
+    const dmts = "https://jsr.io/@scope/pkg/1/types.d.mts";
+    const dcts = "https://jsr.io/@scope/pkg/1/types.d.cts";
+    const analysis = analyze(
+      plan(),
+      graph([
+        module(root, "TypeScript", [
+          dependency("jsr:@scope/pkg@1/a", js),
+          dependency("jsr:@scope/pkg@1/b", mjs),
+          dependency(json, json),
+          dependency("jsr:@scope/pkg@1/types", dts),
+          dependency("jsr:@scope/pkg@1/types.mts", dmts),
+          dependency("jsr:@scope/pkg@1/types.cts", dcts),
+        ]),
+        module(js, "JavaScript"),
+        module(mjs, "Mjs"),
+        module(json, "Json"),
+        module(dts, "Dts"),
+        module(dmts, "Dmts"),
+        module(dcts, "Dcts"),
+      ]),
+    );
     assertEquals(
-      a.vendoredCode,
+      analysis.vendoredCopies,
       new Map([
-        ["https://jsr.io/@std/encoding/1.0.0/hex.ts", "_deps/jsr.io/@std/encoding/1.0.0/hex.js"],
-        ["https://jsr.io/@std/encoding/1.0.0/_common.ts", "_deps/jsr.io/@std/encoding/1.0.0/_common.js"],
+        [js, vendoredRel(js, "_deps", "JavaScript")],
+        [mjs, vendoredRel(mjs, "_deps", "Mjs")],
+        [json, vendoredRel(json, "_deps", "Json")],
+        [dts, vendoredRel(dts, "_deps", "Dts")],
+        [dmts, vendoredRel(dmts, "_deps", "Dmts")],
+        [dcts, vendoredRel(dcts, "_deps", "Dcts")],
       ]),
     );
-    assertEquals(a.vendoredAssets.size, 0);
   });
 
-  await t.step("npm leaf → dependency; node: → no dependency", () => {
-    assertEquals(a.npmDeps, { chalk: "^5" });
+  await t.step("TypeScript from an arbitrary remote origin is vendored", () => {
+    const root = fileUrl("src/mod.ts");
+    const remote = "https://example.com/mod.ts";
+    const analysis = analyze(
+      plan(),
+      graph([
+        module(root, "TypeScript", [dependency(remote, remote)]),
+        module(remote, "TypeScript"),
+      ]),
+    );
+    const src = vendoredRel(remote, "_deps", "TypeScript");
+    assertEquals(analysis.vendoredCode, new Map([[remote, { src, emit: tsToJs(src) }]]));
   });
+});
 
-  await t.step("srcRoot is the common ancestor of local sources", () => {
-    assertEquals(a.srcRoot, "/repo/src");
-  });
+Deno.test("analyze — unsupported module scope", async (t) => {
+  for (const [name, media] of [["CommonJS", "Cjs"], ["Wasm", "Wasm"]] as const) {
+    await t.step(`rejects local ${name}`, () => {
+      const root = fileUrl("src/mod.ts");
+      const target = fileUrl(`src/x-${name}`);
+      throwsCode([
+        module(root, "TypeScript", [dependency(`./x-${name}`, target)]),
+        module(target, media),
+      ], "UNSUPPORTED_MODULE");
+    });
+  }
+});
 
-  await t.step("the vendored jsr specifier resolves to its inlined .js path", () => {
-    assertEquals(a.specifiers.resolve("jsr:@std/encoding@1.0.0/hex"), {
-      kind: "vendored",
-      rel: "_deps/jsr.io/@std/encoding/1.0.0/hex.js",
+Deno.test("analyze — npm replacements", async (t) => {
+  await t.step("prunes the replaced JSR graph and binds the alias to npm", () => {
+    const root = fileUrl("src/mod.ts");
+    const remote = "https://jsr.io/@valibot/valibot/1.3.1/mod.ts";
+    const analysis = analyze(
+      plan({}, { "@v/v": "jsr:@valibot/valibot@1.3.1" }, { "@v/v": "valibot" }),
+      graph([
+        module(root, "TypeScript", [dependency("@v/v", remote)]),
+        module(remote, "TypeScript"),
+      ]),
+    );
+    assertEquals(analysis.vendoredCode.size, 0);
+    assertEquals(analysis.npmDeps, { valibot: "1.3.1" });
+    assertEquals(analysis.specifiers.resolve(root, "@v/v"), {
+      kind: "npm",
+      bare: "valibot",
+      registry: "npm:valibot@1.3.1",
     });
   });
 
-  await t.step("a relative specifier of a vendored module is not bound into the index (resolve stays null)", () => {
-    assertEquals(a.specifiers.resolve("./_common.ts"), null);
+  await t.step("replaces an npm-target alias without retaining the original npm dependency", () => {
+    const root = fileUrl("src/mod.ts");
+    const analysis = analyze(
+      plan({}, { chalk: "npm:chalk@^5" }, { chalk: "kleur@^4" }),
+      graph([
+        module(root, "TypeScript", [dependency("chalk", "npm:chalk@^5")]),
+        module("npm:chalk@^5", undefined, [], "load rejected or errored"),
+      ]),
+    );
+    assertEquals(analysis.npmDeps, { kleur: "^4" });
+    assertEquals(analysis.specifiers.resolve(root, "chalk"), {
+      kind: "npm",
+      bare: "kleur",
+      registry: "npm:kleur@^4",
+    });
+  });
+
+  await t.step("replaces aliases independently within one JSR package", () => {
+    const root = fileUrl("src/mod.ts");
+    const hex = "https://jsr.io/@std/encoding/1.0.0/hex.ts";
+    const base64 = "https://jsr.io/@std/encoding/1.0.0/base64.ts";
+    const analysis = analyze(
+      plan(
+        {},
+        {
+          hex: "jsr:@std/encoding@1.0.0/hex",
+          base64: "jsr:@std/encoding@1.0.0/base64",
+        },
+        { hex: "encoding-hex", base64: "encoding-base64" },
+      ),
+      graph([
+        module(root, "TypeScript", [dependency("hex", hex), dependency("base64", base64)]),
+        module(hex, "TypeScript"),
+        module(base64, "TypeScript"),
+      ]),
+    );
+
+    assertEquals(analysis.vendoredCode.size, 0);
+    assertEquals(analysis.specifiers.resolve(root, "hex"), {
+      kind: "npm",
+      bare: "encoding-hex/hex",
+      registry: "npm:encoding-hex@1.0.0/hex",
+    });
+    assertEquals(analysis.specifiers.resolve(root, "base64"), {
+      kind: "npm",
+      bare: "encoding-base64/base64",
+      registry: "npm:encoding-base64@1.0.0/base64",
+    });
+    assertEquals(analysis.specifiers.declarationImportMap(), {
+      imports: {
+        hex: "npm:encoding-hex@1.0.0/hex",
+        base64: "npm:encoding-base64@1.0.0/base64",
+      },
+      scopes: {},
+    });
+  });
+
+  await t.step("vendors an unreplaced sibling alias", () => {
+    const root = fileUrl("src/mod.ts");
+    const hex = "https://jsr.io/@std/encoding/1.0.0/hex.ts";
+    const base64 = "https://jsr.io/@std/encoding/1.0.0/base64.ts";
+    const analysis = analyze(
+      plan(
+        {},
+        {
+          encoding: "jsr:@std/encoding@1.0.0/hex",
+          "encoding/base64": "jsr:@std/encoding@1.0.0/base64",
+        },
+        { encoding: "encoding-npm" },
+      ),
+      graph([
+        module(root, "TypeScript", [dependency("encoding", hex), dependency("encoding/base64", base64)]),
+        module(hex, "TypeScript"),
+        module(base64, "TypeScript"),
+      ]),
+    );
+
+    const src = vendoredRel(base64, "_deps", "TypeScript");
+    const target = { kind: "vendored" as const, src, emit: tsToJs(src) };
+    assertEquals(analysis.vendoredCode, new Map([[base64, { src: target.src, emit: target.emit }]]));
+    assertEquals(analysis.specifiers.resolve(root, "encoding"), {
+      kind: "npm",
+      bare: "encoding-npm/hex",
+      registry: "npm:encoding-npm@1.0.0/hex",
+    });
+    assertEquals(analysis.specifiers.resolve(root, "encoding/base64"), target);
+    assertEquals(analysis.specifiers.declarationImportMap(), {
+      imports: {
+        encoding: "npm:encoding-npm@1.0.0/hex",
+        "encoding/base64": `./${src}`,
+      },
+      scopes: {},
+    });
+  });
+
+  await t.step("prunes a replaced alias used by a vendored module", () => {
+    const root = fileUrl("src/mod.ts");
+    const parent = "https://jsr.io/@scope/parent/1.0.0/mod.ts";
+    const shared = "https://jsr.io/@scope/shared/1.0.0/mod.ts";
+    const analysis = analyze(
+      plan(
+        {},
+        {
+          parent: "jsr:@scope/parent@1.0.0",
+          shared: "jsr:@scope/shared@1.0.0",
+        },
+        { shared: "shared-npm" },
+      ),
+      graph([
+        module(root, "TypeScript", [dependency("parent", parent)]),
+        module(parent, "TypeScript", [dependency("shared", shared)]),
+        module(shared, "TypeScript"),
+      ]),
+    );
+
+    assertEquals([...analysis.vendoredCode.keys()], [parent]);
+    assertEquals(analysis.specifiers.resolve(parent, "shared"), {
+      kind: "npm",
+      bare: "shared-npm",
+      registry: "npm:shared-npm@1.0.0",
+    });
+  });
+
+  await t.step("vendors a direct JSR import independently of a replaced alias", () => {
+    const root = fileUrl("src/mod.ts");
+    const remote = "https://jsr.io/@valibot/valibot/1.3.1/mod.ts";
+    const direct = "jsr:@valibot/valibot@1.3.1";
+    const analysis = analyze(
+      plan({}, { "@v/v": direct }, { "@v/v": "valibot" }),
+      graph([
+        module(root, "TypeScript", [dependency("@v/v", remote), dependency(direct, remote)]),
+        module(remote, "TypeScript"),
+      ]),
+    );
+
+    const src = vendoredRel(remote, "_deps", "TypeScript");
+    assertEquals(analysis.specifiers.resolve(root, "@v/v"), {
+      kind: "npm",
+      bare: "valibot",
+      registry: "npm:valibot@1.3.1",
+    });
+    assertEquals(analysis.specifiers.resolve(root, direct), { kind: "vendored", src, emit: tsToJs(src) });
   });
 });
 
-Deno.test("analyze — srcRoot of sources in divergent directories has no trailing separator", () => {
-  // Two entries in different top-level dirs make @std/path `common()` return a path WITH a trailing slash ("/repo/");
-  // analyze must strip it so the package code root mirrors cleanly below srcRoot.
-  const g = graph([
-    mod(fileUrl("src/a.ts"), "TypeScript", []),
-    mod(fileUrl("lib/b.ts"), "TypeScript", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/a.ts", "./b": "./lib/b.ts" }), g);
-  assertEquals(a.srcRoot, "/repo");
-});
+Deno.test("analyze — npm dependency requirements", async (t) => {
+  await t.step("rejects conflicting replacement requirements", () => {
+    const error = assertThrows(
+      () =>
+        analyze(
+          plan(
+            {},
+            {
+              hex: "jsr:@std/encoding@1.0.0/hex",
+              base64: "jsr:@std/encoding@2.0.0/base64",
+            },
+            { hex: "encoding-npm@^1", base64: "encoding-npm@^2" },
+          ),
+          graph([module(fileUrl("src/mod.ts"), "TypeScript")]),
+        ),
+      BuildError,
+    );
+    assertEquals(error.code, "DEPENDENCY_FAILED");
+    assertEquals(error.subject, "encoding-npm");
+  });
 
-Deno.test("analyze — local copy media types (.js / .d.ts / .wasm)", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [
-      dep("./legacy.js", fileUrl("src/legacy.js")),
-      dep("./types.d.ts", fileUrl("src/types.d.ts")),
-      dep("./lib.wasm", fileUrl("src/lib.wasm")),
-    ]),
-    mod(fileUrl("src/legacy.js"), "JavaScript", []),
-    mod(fileUrl("src/types.d.ts"), "Dts", []),
-    mod(fileUrl("src/lib.wasm"), "Wasm", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
-  assertEquals(a.localFiles, ["/repo/src/mod.ts"]);
-  assertEquals(sorted(a.localCopies), ["/repo/src/legacy.js", "/repo/src/lib.wasm", "/repo/src/types.d.ts"]);
-});
+  await t.step("rejects conflicting direct requirements", () => {
+    const root = fileUrl("src/mod.ts");
+    const error = assertThrows(
+      () =>
+        analyze(
+          plan(),
+          graph([
+            module(root, "TypeScript", [
+              dependency("npm:example@^1", "npm:example@^1"),
+              dependency("npm:example@^2", "npm:example@^2"),
+            ]),
+            module("npm:example@^1", undefined),
+            module("npm:example@^2", undefined),
+          ]),
+        ),
+      BuildError,
+    );
+    assertEquals(error.code, "DEPENDENCY_FAILED");
+    assertEquals(error.subject, "example");
+  });
 
-Deno.test("analyze — remote JSON is vendored as a byte asset, not transpiled", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("https://esm.sh/data.json", "https://esm.sh/data.json")]),
-    mod("https://esm.sh/data.json", "Json", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
-  assertEquals(a.vendoredCode.size, 0);
-  assertEquals(a.vendoredAssets, new Map([["https://esm.sh/data.json", "_deps/esm.sh/data.json"]]));
-});
-
-Deno.test("analyze — a remote .wasm module is vendored as a byte asset (path keeps the .wasm extension)", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("https://esm.sh/lib.wasm", "https://esm.sh/lib.wasm")]),
-    mod("https://esm.sh/lib.wasm", "Wasm", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
-  assertEquals(a.vendoredCode.size, 0);
-  // Wasm is byte-copied (ASSET_MEDIA), not transpiled, so the inlined path keeps `.wasm` (no `.js` rewrite).
-  assertEquals(a.vendoredAssets, new Map([["https://esm.sh/lib.wasm", "_deps/esm.sh/lib.wasm"]]));
-});
-
-Deno.test("analyze — a remote JavaScript module is vendored as a copy (rewritten, not transpiled)", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("https://esm.sh/x.js", "https://esm.sh/x.js")]),
-    mod("https://esm.sh/x.js", "JavaScript", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
-  // A remote `.js` is neither transpiled (vendoredCode) nor a byte asset — it is a copy that the rewrite pass fixes up.
-  assertEquals(a.vendoredCode.size, 0);
-  assertEquals(a.vendoredAssets.size, 0);
-  assertEquals(a.vendoredCopies, new Map([["https://esm.sh/x.js", "_deps/esm.sh/x.js"]]));
-  assertEquals(a.specifiers.resolve("https://esm.sh/x.js"), { kind: "vendoredCopy", rel: "_deps/esm.sh/x.js" });
-});
-
-Deno.test("analyze — a remote .d.ts is vendored as a copy (types-only, keeps its .d.ts extension)", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("https://esm.sh/types.d.ts", "https://esm.sh/types.d.ts")]),
-    mod("https://esm.sh/types.d.ts", "Dts", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
-  // A declaration is copied like a JS module (no transpile), but its path keeps `.d.ts` — there is no `.js` twin.
-  assertEquals(a.vendoredCopies, new Map([["https://esm.sh/types.d.ts", "_deps/esm.sh/types.d.ts"]]));
-  assertEquals(a.specifiers.resolve("https://esm.sh/types.d.ts"), {
-    kind: "vendoredCopy",
-    rel: "_deps/esm.sh/types.d.ts",
+  await t.step("coalesces identical requirements", () => {
+    const root = fileUrl("src/mod.ts");
+    const analysis = analyze(
+      plan({}, { a: "npm:example@^1", b: "npm:example@^1" }),
+      graph([
+        module(root, "TypeScript", [
+          dependency("a", "npm:example@^1"),
+          dependency("b", "npm:example@^1"),
+        ]),
+        module("npm:example@^1", undefined),
+      ]),
+    );
+    assertEquals(analysis.npmDeps, { example: "^1" });
   });
 });
 
-Deno.test("analyze — a vendored package importing another vendored package (cross-package chain)", () => {
-  // Local code vendors package A; A's code imports a different package B (different scope). Neither has an npm twin,
-  // so both inline, and A's cross-package import of B binds to B's inlined .js — the transitive-vendor case.
-  // The vendor-internal edge uses the form @deno/graph actually emits for a jsr→jsr import: a leading slash after
-  // `jsr:` and the source's caret range (`jsr:/@y/b@^2.0.0`), not a pinned no-slash specifier.
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("jsr:@x/a@1.0.0", "https://jsr.io/@x/a/1.0.0/mod.ts")]),
-    mod("https://jsr.io/@x/a/1.0.0/mod.ts", "TypeScript", [
-      dep("jsr:/@y/b@^2.0.0", "https://jsr.io/@y/b/2.0.0/mod.ts"),
+Deno.test("analyze — prototype-key aliases and npm packages remain own entries", () => {
+  const root = fileUrl("src/mod.ts");
+  const analysis = analyze(
+    plan(
+      {},
+      Object.fromEntries([
+        ["constructor", "npm:chalk@^5"],
+        ["__proto__", "npm:kleur@^4"],
+      ]),
+    ),
+    graph([
+      module(root, "TypeScript", [
+        dependency("constructor", "npm:chalk@^5"),
+        dependency("__proto__", "npm:kleur@^4"),
+        dependency("npm:constructor@0.0.6", "npm:constructor@0.0.6"),
+      ]),
+      module("npm:chalk@^5", undefined),
+      module("npm:kleur@^4", undefined),
+      module("npm:constructor@0.0.6", undefined),
     ]),
-    mod("https://jsr.io/@y/b/2.0.0/mod.ts", "TypeScript", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
+  );
+
   assertEquals(
-    a.vendoredCode,
-    new Map([
-      ["https://jsr.io/@x/a/1.0.0/mod.ts", "_deps/jsr.io/@x/a/1.0.0/mod.js"],
-      ["https://jsr.io/@y/b/2.0.0/mod.ts", "_deps/jsr.io/@y/b/2.0.0/mod.js"],
+    analysis.npmDeps,
+    Object.fromEntries([
+      ["chalk", "^5"],
+      ["kleur", "^4"],
+      ["constructor", "0.0.6"],
     ]),
   );
-  assertEquals(a.specifiers.resolve("jsr:@x/a@1.0.0"), { kind: "vendored", rel: "_deps/jsr.io/@x/a/1.0.0/mod.js" });
-  assertEquals(a.specifiers.resolve("jsr:/@y/b@^2.0.0"), { kind: "vendored", rel: "_deps/jsr.io/@y/b/2.0.0/mod.js" });
-});
-
-Deno.test("analyze — a custom depsDir replaces the _deps prefix in vendored paths", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("jsr:@x/a@1.0.0", "https://jsr.io/@x/a/1.0.0/mod.ts")]),
-    mod("https://jsr.io/@x/a/1.0.0/mod.ts", "TypeScript", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }, {}, {}, "vendor"), g);
-  assertEquals(a.vendoredCode, new Map([["https://jsr.io/@x/a/1.0.0/mod.ts", "vendor/jsr.io/@x/a/1.0.0/mod.js"]]));
-  assertEquals(a.specifiers.resolve("jsr:@x/a@1.0.0"), { kind: "vendored", rel: "vendor/jsr.io/@x/a/1.0.0/mod.js" });
-});
-
-Deno.test("analyze — import-map npm entries", async (t) => {
-  await t.step("an imported npm: alias is declared with its version", () => {
-    const g = graph([
-      mod(fileUrl("src/mod.ts"), "TypeScript", [dep("chalk", "npm:chalk@^5")]),
-      mod("npm:chalk@^5", undefined, [], "load rejected or errored"),
-    ]);
-    const a = analyze(plan({ ".": "./src/mod.ts" }, { chalk: "npm:chalk@^5" }), g);
-    assertEquals(a.npmDeps, { chalk: "^5" });
-  });
-
-  await t.step("a versionless npm: import-map alias is declared as '*'", () => {
-    const g = graph([
-      mod(fileUrl("src/mod.ts"), "TypeScript", [dep("chalk", "npm:chalk")]),
-      mod("npm:chalk", undefined, [], "load rejected or errored"),
-    ]);
-    const a = analyze(plan({ ".": "./src/mod.ts" }, { chalk: "npm:chalk" }), g);
-    assertEquals(a.npmDeps, { chalk: "*" });
-  });
-
-  await t.step("a direct npm: alias carrying a subpath resolves to the bare name plus the subpath", () => {
-    const g = graph([
-      mod(fileUrl("src/mod.ts"), "TypeScript", [dep("myalias", "npm:pkg@1/sub")]),
-      mod("npm:pkg@1/sub", undefined, [], "load rejected or errored"),
-    ]);
-    const a = analyze(plan({ ".": "./src/mod.ts" }, { myalias: "npm:pkg@1/sub" }), g);
-    assertEquals(a.specifiers.resolve("myalias"), { kind: "npm", bare: "pkg/sub" });
-  });
-});
-
-Deno.test("analyze — an import-map alias pointing at a local file binds to that file's emitted path", () => {
-  // Both alias targets resolve (via the graph) to local modules; the binding must emit a `.ts` as `.js` but keep a
-  // `.d.ts` verbatim (it is copied, with no `.js` twin), so the rewrite pass turns each alias into a relative import.
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [
-      dep("$u", fileUrl("src/util.ts")),
-      dep("$t", fileUrl("src/types.d.ts")),
-    ]),
-    mod(fileUrl("src/util.ts"), "TypeScript", []),
-    mod(fileUrl("src/types.d.ts"), "Dts", []),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }, { "$u": "./src/util.ts", "$t": "./src/types.d.ts" }), g);
-  assertEquals(a.specifiers.resolve("$u"), { kind: "local", rel: "util.js" });
-  assertEquals(a.specifiers.resolve("$t"), { kind: "local", rel: "types.d.ts" });
-});
-
-Deno.test("analyze — replaced jsr packages are pruned and declared as npm", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [
-      dep("@valibot/valibot", "https://jsr.io/@valibot/valibot/1.3.1/mod.ts"),
-    ]),
-    mod("https://jsr.io/@valibot/valibot/1.3.1/mod.ts", "TypeScript", [
-      dep("./schema.ts", "https://jsr.io/@valibot/valibot/1.3.1/schema.ts"),
-    ]),
-    mod("https://jsr.io/@valibot/valibot/1.3.1/schema.ts", "TypeScript", []),
-  ]);
-  const a = analyze(
-    plan({ ".": "./src/mod.ts" }, { "@valibot/valibot": "jsr:@valibot/valibot@1.3.1" }, {
-      "@valibot/valibot": "valibot",
-    }),
-    g,
-  );
-  // The replaced package is an external leaf: neither it nor its transitive schema.ts is vendored.
-  assertEquals(a.vendoredCode.size, 0);
-  assertEquals(a.npmDeps, { valibot: "1.3.1" });
-});
-
-Deno.test("analyze — replacement version resolution", async (t) => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("@v/v", "https://jsr.io/@valibot/valibot/1.3.1/mod.ts")]),
-    mod("https://jsr.io/@valibot/valibot/1.3.1/mod.ts", "TypeScript", []),
-  ]);
-
-  await t.step("version comes from the alias's jsr specifier when the replacement omits it", () => {
-    const a = analyze(
-      plan({ ".": "./src/mod.ts" }, { "@v/v": "jsr:@valibot/valibot@1.3.1" }, { "@v/v": "valibot" }),
-      g,
-    );
-    assertEquals(a.npmDeps, { valibot: "1.3.1" });
-  });
-
-  await t.step("an explicit version in the replacement value wins", () => {
-    const a = analyze(
-      plan({ ".": "./src/mod.ts" }, { "@v/v": "jsr:@valibot/valibot@1.3.1" }, { "@v/v": "valibot@^2" }),
-      g,
-    );
-    assertEquals(a.npmDeps, { valibot: "^2" });
-  });
-
-  await t.step("no explicit version and a versionless alias import → declared as '*'", () => {
-    const a = analyze(
-      plan({ ".": "./src/mod.ts" }, { "@v/v": "jsr:@valibot/valibot" }, { "@v/v": "valibot" }),
-      g,
-    );
-    assertEquals(a.npmDeps, { valibot: "*" });
-  });
-});
-
-Deno.test("analyze — npm version collision collapses to one entry", () => {
-  // Two entry points pin different versions of chalk. The contract collapses them to a single npm dependency; which
-  // version wins is left undefined (one version per package), so this pins only the invariant, not the walk order.
-  const g = graph([
-    mod(fileUrl("src/a.ts"), "TypeScript", [dep("npm:chalk@5.3.0", "npm:chalk@5.3.0")]),
-    mod(fileUrl("src/b.ts"), "TypeScript", [dep("npm:chalk@5.4.0", "npm:chalk@5.4.0")]),
-    mod("npm:chalk@5.3.0", undefined, [], "load rejected or errored"),
-    mod("npm:chalk@5.4.0", undefined, [], "load rejected or errored"),
-  ]);
-  const a = analyze(plan({ ".": "./src/a.ts", "./b": "./src/b.ts" }), g);
-  assertEquals(Object.keys(a.npmDeps), ["chalk"]);
-  assertEquals(["5.3.0", "5.4.0"].includes(a.npmDeps.chalk), true);
-});
-
-Deno.test("analyze — a versionless npm leaf is declared as '*'", () => {
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("npm:leftpad", "npm:leftpad")]),
-    mod("npm:leftpad", undefined, [], "load rejected or errored"),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
-  assertEquals(a.npmDeps, { leftpad: "*" });
-});
-
-Deno.test("analyze — an npm leaf carrying the real graph's error field is still classified external", () => {
-  // @deno/graph sets error="load rejected or errored" on npm: nodes; fateOf must check the npm: scheme BEFORE the
-  // error field, so the package is declared, not thrown as MODULE_LOAD_FAILED.
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("npm:chalk@^5", "npm:chalk@^5")]),
-    mod("npm:chalk@^5", undefined, [], "load rejected or errored"),
-  ]);
-  const a = analyze(plan({ ".": "./src/mod.ts" }), g);
-  assertEquals(a.npmDeps, { chalk: "^5" });
-});
-
-Deno.test("analyze — a vendored module may import a replaced package via its raw jsr specifier", () => {
-  // Inside vendored third-party code this is legitimate (rewritten to npm); only LOCAL code importing a replaced
-  // package via its raw jsr specifier is a REPLACEMENT_DIRECT_IMPORT error — this pins that the check is local-only.
-  const g = graph([
-    mod(fileUrl("src/mod.ts"), "TypeScript", [dep("@other/x", "https://jsr.io/@other/x/1.0.0/mod.ts")]),
-    mod("https://jsr.io/@other/x/1.0.0/mod.ts", "TypeScript", [
-      dep("jsr:@valibot/valibot@1.3.1", "https://jsr.io/@valibot/valibot/1.3.1/mod.ts"),
-    ]),
-    mod("https://jsr.io/@valibot/valibot/1.3.1/mod.ts", "TypeScript", []),
-  ]);
-  const p = plan(
-    { ".": "./src/mod.ts" },
-    { "@other/x": "jsr:@other/x@1.0.0", "@valibot/valibot": "jsr:@valibot/valibot@1.3.1" },
-    { "@valibot/valibot": "valibot" },
-  );
-  const a = analyze(p, g); // must not throw
-  assertEquals(a.npmDeps, { valibot: "1.3.1" });
-  assertEquals(a.vendoredCode.get("https://jsr.io/@other/x/1.0.0/mod.ts"), "_deps/jsr.io/@other/x/1.0.0/mod.js");
-  assertEquals(a.specifiers.resolve("@other/x"), { kind: "vendored", rel: "_deps/jsr.io/@other/x/1.0.0/mod.js" });
-});
-
-Deno.test("analyze — contract violations throw the documented BuildError", async (t) => {
-  await t.step("UNSUPPORTED_LOCAL_SOURCE: a local module of an unhandled media type", () => {
-    const g = graph([mod(fileUrl("src/mod.ts"), "Tsx", [])]);
-    throwsCode(() => analyze(plan({ ".": "./src/mod.ts" }), g), "UNSUPPORTED_LOCAL_SOURCE");
-  });
-
-  await t.step("UNSUPPORTED_VENDORED_DEPENDENCY: a hostless remote dependency (a data: URL) cannot be vendored", () => {
-    // A data: URL has no host+pathname to mirror under _deps, so it is rejected loudly rather than mis-vendored.
-    const url = "data:text/javascript,export default 1";
-    const g = graph([
-      mod(fileUrl("src/mod.ts"), "TypeScript", [dep(url, url)]),
-      mod(url, "JavaScript", []),
-    ]);
-    throwsCode(() => analyze(plan({ ".": "./src/mod.ts" }), g), "UNSUPPORTED_VENDORED_DEPENDENCY");
-  });
-
-  await t.step("MODULE_LOAD_FAILED: a module the graph could not load", () => {
-    const g = graph([mod(fileUrl("src/mod.ts"), undefined, [], "load rejected")]);
-    throwsCode(() => analyze(plan({ ".": "./src/mod.ts" }), g), "MODULE_LOAD_FAILED");
-  });
-
-  await t.step("MODULE_LOAD_FAILED: a remote dependency the graph could not load (the remote-path guard)", () => {
-    // The case above is a local file:// module caught by the early error check; this exercises the SEPARATE guard on
-    // the remote path. An errored remote module has no mediaType, so without that guard it would wrongly fall through
-    // to UNSUPPORTED_VENDORED_DEPENDENCY instead of MODULE_LOAD_FAILED.
-    const g = graph([
-      mod(fileUrl("src/mod.ts"), "TypeScript", [dep("https://esm.sh/x", "https://esm.sh/x.ts")]),
-      mod("https://esm.sh/x.ts", undefined, [], "load rejected or errored"),
-    ]);
-    throwsCode(() => analyze(plan({ ".": "./src/mod.ts" }), g), "MODULE_LOAD_FAILED");
-  });
-
-  await t.step("UNRESOLVED_SPECIFIER: a bare specifier that is neither vendored nor npm", () => {
-    const g = graph([mod(fileUrl("src/mod.ts"), "TypeScript", [dep("mystery-bare", undefined)])]);
-    throwsCode(() => analyze(plan({ ".": "./src/mod.ts" }), g), "UNRESOLVED_SPECIFIER");
-  });
-
-  await t.step("REPLACEMENT_DIRECT_IMPORT: local code imports a replaced package via its raw jsr specifier", () => {
-    const g = graph([
-      mod(fileUrl("src/mod.ts"), "TypeScript", [
-        dep("jsr:@valibot/valibot@1.3.1", "https://jsr.io/@valibot/valibot/1.3.1/mod.ts"),
+  assertEquals(
+    analysis.specifiers.declarationImportMap(),
+    {
+      imports: Object.fromEntries([
+        ["constructor", "npm:chalk@^5"],
+        ["__proto__", "npm:kleur@^4"],
       ]),
-      mod("https://jsr.io/@valibot/valibot/1.3.1/mod.ts", "TypeScript", []),
-    ]);
-    const p = plan({ ".": "./src/mod.ts" }, { "@valibot/valibot": "jsr:@valibot/valibot@1.3.1" }, {
-      "@valibot/valibot": "valibot",
-    });
-    throwsCode(() => analyze(p, g), "REPLACEMENT_DIRECT_IMPORT");
-  });
+      scopes: {},
+    },
+  );
+});
+
+Deno.test("analyze — load and resolution failures share DEPENDENCY_FAILED", () => {
+  throwsCode([module(fileUrl("src/mod.ts"), undefined, [], "load rejected")], "DEPENDENCY_FAILED");
+  throwsCode([
+    module(fileUrl("src/mod.ts"), "TypeScript", [dependency("unknown", undefined)]),
+  ], "DEPENDENCY_FAILED");
+});
+
+Deno.test("analyze — custom depsDir participates in artifact paths", () => {
+  const root = fileUrl("src/mod.ts");
+  const remote = "https://jsr.io/@scope/pkg/1/mod.ts";
+  const analysis = analyze(
+    plan({}, {}, {}, "vendor"),
+    graph([
+      module(root, "TypeScript", [dependency("jsr:@scope/pkg@1", remote)]),
+      module(remote, "TypeScript"),
+    ]),
+  );
+  const src = vendoredRel(remote, "vendor", "TypeScript");
+  assertEquals(analysis.vendoredCode.get(remote), { src, emit: tsToJs(src) });
 });
