@@ -61,8 +61,9 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  * - The `deno.json` import map's `scopes` are not supported.
  * - Type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are not honored.
  * - Generated absolute `file:` imports fail; use explicit type annotations.
- * - Only static ESM, string-literal runtime `import()`, and TypeScript `import()` type specifiers are rewritten;
- *   computed runtime `import()`, `import.meta.resolve()`, CommonJS, TypeScript `import = require`, module declarations/augmentations, triple-slash references, and JavaScript JSDoc are not.
+ * - Specifier rewriting covers static ESM, string-literal runtime `import()`, TypeScript `import()` types, and
+ *   string-literal module declarations/augmentations; computed runtime `import()`, `import.meta.resolve()`, CommonJS,
+ *   TypeScript `import = require`, triple-slash references, and JavaScript JSDoc are not covered.
  * - Validation and graph analysis preserve existing output; emission failures may leave partial output.
  *
  * @param config Package metadata, output policy, registry replacements, and project root.

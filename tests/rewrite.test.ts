@@ -32,6 +32,10 @@ Deno.test("rewriteSpecifiers — supported syntax", async (t) => {
       code: `export declare const x: import("./types.ts?rewritten").Foo;`,
       seen: ["./types.ts"],
     });
+    assertEquals(rewrite(`declare module "./types.ts" {}`, "mod.d.ts"), {
+      code: `declare module "./types.ts?rewritten" {}`,
+      seen: ["./types.ts"],
+    });
     assertEquals(rewrite(`const x = import("./runtime.json", { with: { type: "json" } });`, "mod.js"), {
       code: `const x = import("./runtime.json?rewritten", { with: { type: "json" } });`,
       seen: ["./runtime.json"],

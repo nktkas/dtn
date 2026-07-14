@@ -41,7 +41,7 @@ interface SpecifierSpan {
   value: string;
 }
 
-/** Locates static ESM, string-literal runtime import, and TypeScript import-type specifiers. */
+/** Locates supported runtime and TypeScript module specifiers. */
 function specifierSpans(program: ParseResult["program"]): SpecifierSpan[] {
   const spans: SpecifierSpan[] = [];
   walk(program, {
@@ -55,6 +55,8 @@ function specifierSpans(program: ParseResult["program"]): SpecifierSpan[] {
         node.type === "TSImportType"
       ) {
         source = node.source;
+      } else if (node.type === "TSModuleDeclaration" && node.id.type === "Literal") {
+        source = node.id;
       }
       if (source?.type === "Literal" && typeof source.value === "string") {
         spans.push({ start: source.start, end: source.end, value: source.value });

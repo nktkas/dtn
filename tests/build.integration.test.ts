@@ -482,15 +482,18 @@ Deno.test({
           name: "@fx/npm-subpath",
           version: "1.0.0",
           exports: "./src/mod.ts",
-          imports: { zod: "npm:zod@4.2.1" },
+          imports: { schema: "npm:zod@4.2.1" },
         }),
-        "src/mod.ts": `import { z } from "zod/v4";\nexport const schema = z.literal("typed");\n`,
+        "src/mod.ts": `import { z } from "schema/v4";\n` +
+          `declare module "schema/v4" { interface ZodType { readonly probeMarker?: true } }\n` +
+          `export const schema = z.literal("typed");\n`,
       },
       { outDir: "dist" },
       async ({ dir, error }) => {
         assertEquals(error, null, error?.message);
         const declaration = await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts"));
         assertStringIncludes(declaration, `import { z } from "zod/v4";`);
+        assertStringIncludes(declaration, `declare module "zod/v4"`);
         assertStringIncludes(declaration, `schema: z.ZodLiteral<"typed">`);
       },
     );
