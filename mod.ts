@@ -30,7 +30,7 @@
  * // ├── package.json
  * // └── esm/
  * //     ├── mod.js  (+ mod.js.map, mod.d.ts)
- * //     ├── _deps/.../mod.js  (+ mod.js.map, mod.d.ts)
+ * //     ├── _deps/jsr.io/@std/encoding/1.0.0/hex.js  (+ hex.js.map, hex.d.ts)
  * //     └── ...     other local files related to mod.js
  * ```
  *
@@ -60,6 +60,7 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  * - Deno runtime APIs are not shimmed for Node.
  * - The `deno.json` import map's `scopes` are not supported.
  * - Remote type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are unsupported.
+ * - Vendored URLs whose package paths overlap are rejected.
  * - Generated absolute `file:` imports fail; use explicit type annotations.
  * - Specifier rewriting covers static ESM, string-literal runtime `import()`, TypeScript `import()` types, and
  *   string-literal module declarations/augmentations; computed runtime `import()`, `import.meta.resolve()`, CommonJS,
@@ -71,7 +72,7 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  *
  * @throws {BuildError} `INVALID_CONFIG` when the supplied configuration violates the supported contract.
  * @throws {BuildError} `UNSUPPORTED_MODULE` when a reachable module has an unsupported media type.
- * @throws {BuildError} `DEPENDENCY_FAILED` when loading/resolution fails or npm requirement strings differ for one package.
+ * @throws {BuildError} `DEPENDENCY_FAILED` when loading/resolution fails, npm requirements conflict, or vendored paths overlap.
  * @throws {BuildError} `EMIT_FAILED` when transpilation or output rewriting fails.
  * @throws {BuildError} `BUILD_FAILED` when another platform or library operation fails.
  *
@@ -101,7 +102,7 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  * // ├── package.json
  * // └── esm/
  * //     ├── mod.js  (+ mod.js.map, mod.d.ts)
- * //     ├── _deps/.../mod.js  (+ mod.js.map, mod.d.ts)
+ * //     ├── _deps/jsr.io/@std/encoding/1.0.0/hex.js  (+ hex.js.map, hex.d.ts)
  * //     └── ...     other local files related to mod.js
  * ```
  */

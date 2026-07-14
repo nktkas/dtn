@@ -73,7 +73,7 @@ export interface Analysis {
  * Classifies every module reachable from the entry points.
  *
  * @throws {BuildError} `UNSUPPORTED_MODULE` for an unsupported local or remote medium.
- * @throws {BuildError} `DEPENDENCY_FAILED` when loading/resolution fails or npm requirement strings differ for one package.
+ * @throws {BuildError} `DEPENDENCY_FAILED` when loading/resolution fails, npm requirements conflict, or vendored paths overlap.
  */
 export function analyze(plan: Plan, graph: RawGraph): Analysis {
   const npmDeps = new Map<string, string>();
@@ -154,6 +154,7 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     if (fate.kind === "vendorCode") vendoredCode.set(fate.url, { src: fate.src, emit: fate.emit });
     if (fate.kind === "vendorCopy") vendoredCopies.set(fate.url, fate.rel);
   }
+  validateVendoredPaths(vendoredCode, vendoredCopies);
 
   const allLocal = [...localFiles, ...localCopies];
   const srcRoot = common(allLocal.map((path) => dirname(path))).replace(/[/\\]$/, "");
@@ -217,6 +218,57 @@ export function analyze(plan: Plan, graph: RawGraph): Analysis {
     npmDeps: npmDepsRecord,
     specifiers,
   };
+}
+
+/** Rejects exact and file/directory overlaps in the scratch and package trees. */
+function validateVendoredPaths(
+  code: Map<string, { src: string; emit: string }>,
+  copies: Map<string, string>,
+): void {
+  const scratch: Array<{ path: string; url: string }> = [];
+  const output: Array<{ path: string; url: string }> = [];
+  const authoredDeclarations = new Set<string>();
+
+  for (const [url, { src, emit }] of code) {
+    scratch.push({ path: src, url });
+    output.push(
+      { path: emit, url },
+      { path: jsToDts(emit)!, url },
+      { path: `${emit}.map`, url },
+    );
+  }
+  for (const [url, rel] of copies) {
+    scratch.push({ path: rel, url });
+    output.push({ path: rel, url });
+    if (/\.d\.[cm]?ts$/.test(rel)) authoredDeclarations.add(rel);
+  }
+  for (const [url, rel] of copies) {
+    const declaration = jsToDts(rel);
+    if (declaration !== null && !authoredDeclarations.has(declaration)) {
+      output.push({ path: declaration, url });
+    }
+  }
+
+  validatePathClaims(scratch);
+  validatePathClaims(output);
+}
+
+/** Rejects two file claims that are equal or where one path is the other's parent. */
+function validatePathClaims(claims: Array<{ path: string; url: string }>): void {
+  claims.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : a.url < b.url ? -1 : a.url > b.url ? 1 : 0);
+  for (let i = 1; i < claims.length; i++) {
+    const current = claims[i];
+    for (let j = 0; j < i; j++) {
+      const previous = claims[j];
+      if (current.path !== previous.path && !current.path.startsWith(`${previous.path}/`)) continue;
+      const urls = [previous.url, current.url].sort().map((url) => JSON.stringify(url));
+      throw new BuildError(
+        "DEPENDENCY_FAILED",
+        `vendored modules ${urls[0]} and ${urls[1]} have overlapping artifact paths`,
+        { subject: previous.path },
+      );
+    }
+  }
 }
 
 /** Classifies one graph module without inspecting its outgoing edges. */

@@ -601,6 +601,32 @@ Deno.test("integration — unsupported config features fail before replacing pri
   }
 });
 
+Deno.test("integration — vendored path conflicts fail before replacing prior output", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, () =>
+    new Response(`export const token = {} as const;\n`, {
+      headers: { "content-type": "application/typescript" },
+    }));
+  try {
+    const alice = `http://alice:one@127.0.0.1:${server.addr.port}/mod.ts`;
+    const bob = `http://bob:two@127.0.0.1:${server.addr.port}/mod.ts`;
+    await withBuild(
+      {
+        "deno.json": JSON.stringify({ name: "@fx/conflict", version: "1.0.0", exports: "./src/mod.ts" }),
+        "src/mod.ts": `export { token as alice } from ${JSON.stringify(alice)};\n` +
+          `export { token as bob } from ${JSON.stringify(bob)};\n`,
+        "dist/SENTINEL": "previous",
+      },
+      { outDir: "dist" },
+      async ({ dir, error }) => {
+        assertEquals(error?.code, "DEPENDENCY_FAILED");
+        assertEquals(await Deno.readTextFile(join(dir, "dist/SENTINEL")), "previous");
+      },
+    );
+  } finally {
+    await server.shutdown();
+  }
+});
+
 Deno.test("integration — local and remote JSON dependencies are copied and execute in Node", async () => {
   const localJson = `{ "value": 1 }\n`;
   const remoteJson = `\uFEFF{ "value": 2 }\r\n`;

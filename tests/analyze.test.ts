@@ -279,6 +279,65 @@ Deno.test("analyze — supported media", async (t) => {
   });
 });
 
+Deno.test("analyze — mirrored vendored path conflicts", async (t) => {
+  const root = fileUrl("src/mod.ts");
+
+  await t.step("rejects transformed sibling artifacts", () => {
+    const ts = "https://example.com/pkg/foo.ts";
+    const js = "https://example.com/pkg/foo.js";
+    const error = throwsCode([
+      module(root, "TypeScript", [dependency(ts, ts), dependency(js, js)]),
+      module(ts, "TypeScript"),
+      module(js, "JavaScript"),
+    ], "DEPENDENCY_FAILED");
+    assertEquals(error.subject, "_deps/example.com/pkg/foo.d.ts");
+  });
+
+  await t.step("rejects file and directory overlap", () => {
+    const file = "https://example.com/pkg/foo.ts";
+    const between = "https://example.com/pkg/foo.ts-extra.ts";
+    const nested = "https://example.com/pkg/foo.ts/bar.ts";
+    const error = throwsCode([
+      module(root, "TypeScript", [dependency(file, file), dependency(between, between), dependency(nested, nested)]),
+      module(file, "TypeScript"),
+      module(between, "TypeScript"),
+      module(nested, "TypeScript"),
+    ], "DEPENDENCY_FAILED");
+    assertEquals(error.subject, "_deps/example.com/pkg/foo.ts");
+  });
+
+  await t.step("rejects emitted file and directory overlap across a source map", () => {
+    const file = "https://example.com/pkg/foo.ts";
+    const nested = "https://example.com/pkg/foo.js/bar.ts";
+    const error = throwsCode([
+      module(root, "TypeScript", [dependency(file, file), dependency(nested, nested)]),
+      module(file, "TypeScript"),
+      module(nested, "TypeScript"),
+    ], "DEPENDENCY_FAILED");
+    assertEquals(error.subject, "_deps/example.com/pkg/foo.js");
+  });
+
+  await t.step("allows an authored declaration beside copied JavaScript", () => {
+    const js = "https://example.com/pkg/foo.js";
+    const dts = "https://example.com/pkg/foo.d.ts";
+    const analysis = analyze(
+      plan(),
+      graph([
+        module(root, "TypeScript", [dependency(js, js), dependency(dts, dts)]),
+        module(js, "JavaScript"),
+        module(dts, "Dts"),
+      ]),
+    );
+    assertEquals(
+      analysis.vendoredCopies,
+      new Map([
+        [js, "_deps/example.com/pkg/foo.js"],
+        [dts, "_deps/example.com/pkg/foo.d.ts"],
+      ]),
+    );
+  });
+});
+
 Deno.test("analyze — unsupported module scope", async (t) => {
   for (const [name, media] of [["CommonJS", "Cjs"], ["Wasm", "Wasm"]] as const) {
     await t.step(`rejects local ${name}`, () => {

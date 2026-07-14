@@ -98,9 +98,11 @@ Deno.test("rewriteStage — the relative .ts → .js flip deferred by the vendor
 
     // Vendor-transpile output: sibling references are still in `.ts` form, while non-relative specifiers are already final.
     const aEmit = analysis.vendoredCode.get(a)!.emit;
+    const bEmit = analysis.vendoredCode.get(b)!.emit;
     const aSrc = analysis.vendoredCode.get(a)!.src;
     const bSrc = analysis.vendoredCode.get(b)!.src;
     const relativeSource = relSpecifier(aSrc, bSrc);
+    const relativeEmit = relSpecifier(aEmit, bEmit);
     await write(join(p.codeDir, aEmit), `import "${relativeSource}";\nimport chalk from "chalk";\n`);
     await write(
       join(p.codeDir, aEmit.replace(/\.js$/, ".d.ts")),
@@ -109,10 +111,10 @@ Deno.test("rewriteStage — the relative .ts → .js flip deferred by the vendor
     await rewriteStage(analysis);
 
     const js = await Deno.readTextFile(join(p.codeDir, aEmit));
-    assertStringIncludes(js, `mod.js`);
+    assertStringIncludes(js, `"${relativeEmit}"`);
     assertStringIncludes(js, `from "chalk"`);
     const dts = await Deno.readTextFile(join(p.codeDir, aEmit.replace(/\.js$/, ".d.ts")));
-    assertStringIncludes(dts, `mod.js`);
+    assertStringIncludes(dts, `"${relativeEmit}"`);
     assertStringIncludes(dts, `from "chalk"`);
   } finally {
     await Deno.remove(root, { recursive: true });

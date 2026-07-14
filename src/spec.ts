@@ -69,18 +69,24 @@ export function parseReplacement(value: string): { name: string; version?: strin
 // Package paths
 // =============================================================================
 
+/** A URL component that can be mirrored without platform-dependent filename semantics. */
+const MIRRORED_URL_COMPONENT = /^[a-z0-9._@+-]+$/;
+/** Windows device names remain reserved even when followed by an extension. */
+const WINDOWS_DEVICE_COMPONENT = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/;
+
 /** True for `./x` and `../x` relative specifiers. */
 export function isRelative(spec: string): boolean {
   return spec.startsWith("./") || spec.startsWith("../");
 }
 
 /**
- * The portable package-relative source path of one vendored URL and media type.
+ * The package-relative source path of one vendored URL and media type.
+ * Ordinary portable HTTP URLs mirror their host and path; other identities use encoded components.
  *
  * @example
  * ```ts
  * vendoredRel("https://jsr.io/@std/encoding/1.0.0/hex.ts", "_deps", "TypeScript");
- * // -> "_deps/h-jsr~2eio/p-~40std/p-encoding/p-1~2e0~2e0/p-hex~2ets/mod.ts"
+ * // -> "_deps/jsr.io/@std/encoding/1.0.0/hex.ts"
  * ```
  */
 export function vendoredRel(
@@ -89,15 +95,9 @@ export function vendoredRel(
   media: "TypeScript" | "Mts" | "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts" | "Json",
 ): string {
   const u = new URL(url);
-  const segments = portableComponents("h", u.host);
   const pathname = u.pathname.startsWith("/") ? u.pathname.slice(1) : u.pathname;
-  for (const segment of pathname.split("/")) segments.push(...portableComponents("p", segment));
   const query = u.href.indexOf("?");
   const hash = u.href.indexOf("#");
-  if (query !== -1 && (hash === -1 || query < hash)) {
-    segments.push(...portableComponents("q", u.href.slice(query + 1, hash === -1 ? undefined : hash)));
-  }
-  if (hash !== -1) segments.push(...portableComponents("f", u.href.slice(hash + 1)));
 
   let extension = ".js";
   if (media === "TypeScript") extension = ".ts";
@@ -107,7 +107,42 @@ export function vendoredRel(
   if (media === "Dmts") extension = ".d.mts";
   if (media === "Dcts") extension = ".d.cts";
   if (media === "Json") extension = ".json";
+
+  const components = pathname.split("/");
+  const sourceExtension = pathname.match(/(\.d\.mts|\.d\.cts|\.d\.ts|\.mts|\.mjs|\.json|\.ts|\.js)$/)?.[1];
+  // Encoded paths reserve `h-*` as their first component, so mirrored hosts in that namespace must remain encoded.
+  if (
+    (u.protocol === "http:" || u.protocol === "https:") &&
+    u.username === "" &&
+    u.password === "" &&
+    u.port === "" &&
+    query === -1 &&
+    hash === -1 &&
+    !u.host.startsWith("h-") &&
+    sourceExtension === extension &&
+    canMirrorUrlComponent(u.host) &&
+    components.every(canMirrorUrlComponent)
+  ) {
+    return `${depsDir}/${u.host}/${pathname}`;
+  }
+
+  const segments = portableComponents("h", u.host);
+  for (const segment of components) segments.push(...portableComponents("p", segment));
+  if (query !== -1 && (hash === -1 || query < hash)) {
+    segments.push(...portableComponents("q", u.href.slice(query + 1, hash === -1 ? undefined : hash)));
+  }
+  if (hash !== -1) segments.push(...portableComponents("f", u.href.slice(hash + 1)));
   return `${depsDir}/${segments.join("/")}/mod${extension}`;
+}
+
+/** Whether one URL component can be mirrored without filesystem or package-resolution ambiguity. */
+function canMirrorUrlComponent(value: string): boolean {
+  return value !== "" &&
+    value !== "node_modules" &&
+    !value.endsWith(".") &&
+    !WINDOWS_DEVICE_COMPONENT.test(value) &&
+    MIRRORED_URL_COMPONENT.test(value) &&
+    new TextEncoder().encode(value).length <= 120;
 }
 
 /** Splits one encoded URL component below common filesystem component limits without losing segment boundaries. */

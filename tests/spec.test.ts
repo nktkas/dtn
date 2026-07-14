@@ -32,15 +32,30 @@ Deno.test("parseReplacement", () => {
   assertEquals(parseReplacement("@broken"), null);
 });
 
-Deno.test("vendoredRel — portable media-aware URL identity", async (t) => {
-  await t.step("uses a media-specific artifact inside a directory representing the complete URL", () => {
+Deno.test("vendoredRel — readable common paths with portable fallback", async (t) => {
+  await t.step("mirrors ordinary HTTP URLs with matching media extensions", () => {
     assertEquals(
       vendoredRel("https://jsr.io/@std/encoding/1.0.0/hex.ts", "_deps", "TypeScript"),
-      "_deps/h-jsr~2eio/p-~40std/p-encoding/p-1~2e0~2e0/p-hex~2ets/mod.ts",
+      "_deps/jsr.io/@std/encoding/1.0.0/hex.ts",
     );
+    assertEquals(
+      vendoredRel("https://jsr.io/@scope/pkg/1/mod.mjs", "_deps", "Mjs"),
+      "_deps/jsr.io/@scope/pkg/1/mod.mjs",
+    );
+  });
+
+  await t.step("uses portable media-aware paths when URL mirroring would lose information or portability", () => {
     assertEquals(
       vendoredRel("https://jsr.io/@scope/pkg/1/mod", "_deps", "Mjs"),
       "_deps/h-jsr~2eio/p-~40scope/p-pkg/p-1/p-mod/mod.mjs",
+    );
+    assertEquals(
+      vendoredRel("https://h-example/mod.ts", "_deps", "TypeScript"),
+      "_deps/h-h-example/p-mod~2ets/mod.ts",
+    );
+    assertEquals(
+      vendoredRel("https://example.com:8443/mod.ts", "_deps", "TypeScript"),
+      "_deps/h-example~2ecom~3a8443/p-mod~2ets/mod.ts",
     );
   });
 

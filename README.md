@@ -38,7 +38,7 @@ await build({
 // ├── package.json
 // └── esm/
 //     ├── mod.js  (+ mod.js.map, mod.d.ts)
-//     ├── _deps/.../mod.js  (+ mod.js.map, mod.d.ts)
+//     ├── _deps/jsr.io/@std/encoding/1.0.0/hex.js  (+ hex.js.map, hex.d.ts)
 //     └── ...     other local files related to mod.js
 ```
 
@@ -87,13 +87,13 @@ try {
 }
 ```
 
-| `code`               | Raised when                                                                    |
-| -------------------- | ------------------------------------------------------------------------------ |
-| `INVALID_CONFIG`     | Exports, registry aliases, or npm replacements violate the supported contract. |
-| `UNSUPPORTED_MODULE` | A reachable module has an unsupported media type.                              |
-| `DEPENDENCY_FAILED`  | Loading/resolution fails or npm requirement strings differ for one package.    |
-| `EMIT_FAILED`        | Transpilation, expected artifacts, rewriting, or source maps fail.             |
-| `BUILD_FAILED`       | Another platform or library operation fails.                                   |
+| `code`               | Raised when                                                                     |
+| -------------------- | ------------------------------------------------------------------------------- |
+| `INVALID_CONFIG`     | Exports, registry aliases, or npm replacements violate the supported contract.  |
+| `UNSUPPORTED_MODULE` | A reachable module has an unsupported media type.                               |
+| `DEPENDENCY_FAILED`  | Loading/resolution fails, npm requirements conflict, or vendored paths overlap. |
+| `EMIT_FAILED`        | Transpilation, expected artifacts, rewriting, or source maps fail.              |
+| `BUILD_FAILED`       | Another platform or library operation fails.                                    |
 
 The original platform or library error is available through `error.cause` when one exists.
 
@@ -108,6 +108,7 @@ The intentionally supported scope is narrower than Deno's module system:
   string-literal module declarations/augmentations; computed runtime `import()`, `import.meta.resolve()`, CommonJS,
   TypeScript `import = require`, triple-slash references, and JavaScript JSDoc are not covered.**
 - **Remote type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are unsupported.**
+- **Vendored URLs whose package paths overlap are rejected.**
 - **Generated absolute `file:` imports fail; use explicit type annotations.**
 - **Deno runtime APIs are not shimmed for Node.**
 - **Dependency graph resolution ignores `deno.lock`.**
