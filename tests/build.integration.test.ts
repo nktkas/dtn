@@ -529,31 +529,45 @@ Deno.test("integration — unsupported config features fail before replacing pri
   }
 });
 
-Deno.test("integration — local JSON dependencies are copied and execute in Node", async () => {
-  const json = `{ "value": 1 }\n`;
+Deno.test("integration — local and remote JSON dependencies are copied and execute in Node", async () => {
+  const localJson = `{ "value": 1 }\n`;
+  const remoteJson = `\uFEFF{ "value": 2 }\r\n`;
+  const remote = `data:application/json,${encodeURIComponent(remoteJson)}`;
+  const remoteSource = `import data from "${remote}" with { type: "json" };\nexport const nested = data.value;\n`;
+  const remoteTs = `data:text/typescript,${encodeURIComponent(remoteSource)}`;
   await withBuild(
     {
       "deno.json": JSON.stringify({ name: "@fx/json", version: "1.0.0", exports: "./src/mod.ts" }),
-      "src/data.json": json,
-      "src/mod.ts": `import data from "./data.json" with { type: "json" };\n` +
-        `export const value = data.value;\n` +
-        `export { default as raw } from "./data.json" with { type: "json" };\n`,
+      "src/data.json": localJson,
+      "src/mod.ts": `import local from "./data.json" with { type: "json" };\n` +
+        `import remote from "${remote}" with { type: "json" };\n` +
+        `import { nested } from "${remoteTs}";\n` +
+        `export const value = local.value + remote.value + nested;\n` +
+        `export { default as localRaw } from "./data.json" with { type: "json" };\n` +
+        `export { default as remoteRaw } from "${remote}" with { type: "json" };\n`,
     },
     { outDir: "dist" },
     async ({ dir, error }) => {
       assertEquals(error, null, error?.message);
-      assertEquals(await Deno.readTextFile(join(dir, "dist/esm/data.json")), json);
+      assertEquals(await Deno.readTextFile(join(dir, "dist/esm/data.json")), localJson);
+      const runtime = await Deno.readTextFile(join(dir, "dist/esm/mod.js"));
+      const remotePath = runtime.match(/from "(\.\/.+\/mod\.json)"/)?.[1];
+      assert(remotePath !== undefined);
+      assertEquals(await Deno.readFile(join(dir, "dist/esm", remotePath)), new TextEncoder().encode(remoteJson));
+      const declaration = await Deno.readTextFile(join(dir, "dist/esm/mod.d.ts"));
+      assertStringIncludes(declaration, `export { default as remoteRaw } from "${remotePath}";`);
       assertEquals(
         await runCommand(
           "node",
           [
             "--input-type=module",
             "--eval",
-            `const { raw, value } = await import("./dist/esm/mod.js"); console.log(value + raw.value);`,
+            `const { localRaw, remoteRaw, value } = await import("./dist/esm/mod.js"); ` +
+            `console.log(value + localRaw.value + remoteRaw.value);`,
           ],
           dir,
         ),
-        "2",
+        "8",
       );
     },
   );

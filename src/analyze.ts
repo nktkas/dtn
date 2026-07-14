@@ -18,7 +18,7 @@ import { isRelative, jsToDts, parseRegistry, parseReplacement, toPosix, tsToJs, 
 const COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Dmts", "Dcts", "Json"]);
 
 /** Remote media copied and rewritten without transpilation. */
-const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Dmts", "Dcts"]);
+const VENDOR_COPY_MEDIA: ReadonlySet<RawMediaType> = new Set(["JavaScript", "Mjs", "Dts", "Dmts", "Dcts", "Json"]);
 
 /** What becomes of one reachable graph module. */
 type Fate =
@@ -60,7 +60,7 @@ export interface Analysis {
   localCopies: string[];
   /** Remote TypeScript/MTS URL to staged source and emitted JavaScript/MJS paths. */
   vendoredCode: Map<string, { src: string; emit: string }>;
-  /** Remote JavaScript/MJS/declaration URL to copied package path. */
+  /** Remote JavaScript/MJS/JSON/declaration URL to copied package path. */
   vendoredCopies: Map<string, string>;
   /** Emitted package-relative module path to its original graph referrer. */
   sourceByOutput: Map<string, string>;
@@ -249,7 +249,7 @@ function fateOf(module: RawModule, depsDir: string): Fate {
     return {
       kind: "vendorCopy",
       url: module.specifier,
-      rel: vendoredRel(module.specifier, depsDir, media as "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts"),
+      rel: vendoredRel(module.specifier, depsDir, media as "JavaScript" | "Mjs" | "Dts" | "Dmts" | "Dcts" | "Json"),
     };
   }
   throw new BuildError("UNSUPPORTED_MODULE", `remote module has unsupported media type ${media}`, {

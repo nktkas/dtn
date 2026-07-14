@@ -54,8 +54,8 @@ export type { BuildConfig, DenoConfig } from "./src/intake.ts";
  *
  * Limitations:
  * - Only transpiled TypeScript gets source maps; copied JavaScript/MJS maps and mapping directives are omitted.
- * - Local modules support `.ts`, `.mts`, `.js`, `.mjs`, `.json`, `.d.ts`, `.d.mts`, and `.d.cts`; vendored remote
- *   modules support the same forms except JSON. TSX, JSX, CommonJS, and Wasm are unsupported.
+ * - Local and vendored remote modules support `.ts`, `.mts`, `.js`, `.mjs`, `.json`, `.d.ts`, `.d.mts`, and `.d.cts`.
+ *   TSX, JSX, CommonJS, and Wasm are unsupported.
  * - Dependency graph resolution ignores `deno.lock`.
  * - Deno runtime APIs are not shimmed for Node.
  * - The `deno.json` import map's `scopes` are not supported.

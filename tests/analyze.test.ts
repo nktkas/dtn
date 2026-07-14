@@ -219,10 +219,11 @@ Deno.test("analyze — supported media", async (t) => {
     ]);
   });
 
-  await t.step("JSR JavaScript, MJS, and declarations retain media-specific artifacts", () => {
+  await t.step("remote JavaScript, MJS, JSON, and declarations retain media-specific artifacts", () => {
     const root = fileUrl("src/mod.ts");
     const js = "https://jsr.io/@scope/pkg/1/a";
     const mjs = "https://jsr.io/@scope/pkg/1/b";
+    const json = "https://example.com/data.json";
     const dts = "https://jsr.io/@scope/pkg/1/types";
     const dmts = "https://jsr.io/@scope/pkg/1/types.d.mts";
     const dcts = "https://jsr.io/@scope/pkg/1/types.d.cts";
@@ -232,12 +233,14 @@ Deno.test("analyze — supported media", async (t) => {
         module(root, "TypeScript", [
           dependency("jsr:@scope/pkg@1/a", js),
           dependency("jsr:@scope/pkg@1/b", mjs),
+          dependency(json, json),
           dependency("jsr:@scope/pkg@1/types", dts),
           dependency("jsr:@scope/pkg@1/types.mts", dmts),
           dependency("jsr:@scope/pkg@1/types.cts", dcts),
         ]),
         module(js, "JavaScript"),
         module(mjs, "Mjs"),
+        module(json, "Json"),
         module(dts, "Dts"),
         module(dmts, "Dmts"),
         module(dcts, "Dcts"),
@@ -248,6 +251,7 @@ Deno.test("analyze — supported media", async (t) => {
       new Map([
         [js, vendoredRel(js, "_deps", "JavaScript")],
         [mjs, vendoredRel(mjs, "_deps", "Mjs")],
+        [json, vendoredRel(json, "_deps", "Json")],
         [dts, vendoredRel(dts, "_deps", "Dts")],
         [dmts, vendoredRel(dmts, "_deps", "Dmts")],
         [dcts, vendoredRel(dcts, "_deps", "Dcts")],
@@ -281,15 +285,6 @@ Deno.test("analyze — unsupported module scope", async (t) => {
       ], "UNSUPPORTED_MODULE");
     });
   }
-
-  await t.step("rejects unsupported remote media", () => {
-    const root = fileUrl("src/mod.ts");
-    const remote = "https://jsr.io/@scope/pkg/1/data.json";
-    throwsCode([
-      module(root, "TypeScript", [dependency("jsr:@scope/pkg@1/data", remote)]),
-      module(remote, "Json"),
-    ], "UNSUPPORTED_MODULE");
-  });
 });
 
 Deno.test("analyze — npm replacements", async (t) => {

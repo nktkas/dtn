@@ -26,7 +26,7 @@ import { isRelative, jsToDts, relSpecifier, toPosix, tsToJs } from "./spec.ts";
 // =============================================================================
 
 /**
- * Inlines remote dependencies: JavaScript and declarations are copied, while TypeScript/MTS is rewritten and transpiled.
+ * Inlines remote dependencies: JavaScript, JSON, and declarations are copied, while TypeScript/MTS is rewritten and transpiled.
  *
  * @throws {BuildError} `DEPENDENCY_FAILED` when a vendored source cannot be read from the Deno cache.
  * @throws {BuildError} `EMIT_FAILED` when vendored TypeScript/MTS cannot be transpiled.
@@ -48,7 +48,14 @@ export async function vendorStage(analysis: Analysis, graph: RawGraph): Promise<
 
   // The shipped copy stays clean; only the scratch copy receives @ts-nocheck for a consumer using checkJs.
   for (const [url, rel] of vendoredCopies) {
-    const rewritten = rewriteVendored(decoder.decode(await graph.readSource(url)), url, rel).code;
+    const source = await graph.readSource(url);
+    // JSON has no specifiers, and the scratch @ts-nocheck comment would make it invalid.
+    if (rel.endsWith(".json")) {
+      await fs.writeBytes(join(plan.codeDir, rel), source);
+      await fs.writeBytes(join(plan.tmpDir, rel), source);
+      continue;
+    }
+    const rewritten = rewriteVendored(decoder.decode(source), url, rel).code;
     await fs.writeText(join(plan.codeDir, rel), rewritten);
     // A hashbang must stay at byte zero; the scratch-only directive follows it.
     const hashbang = rewritten.match(/^#![^\r\n\u2028\u2029]*(?:\r\n|[\n\r\u2028\u2029]|$)/)?.[0] ?? "";
