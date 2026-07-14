@@ -89,11 +89,20 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
     resolve: resolveSpecifier,
   });
 
-  // `@deno/graph` records redirects but does not apply them to dependency edges,
-  // so follow the table transitively; a CLI-populated cache stores one entry per redirect hop.
+  const fragmentTarget = (specifier: string): string | undefined => {
+    const hash = specifier.indexOf("#");
+    if (hash === -1) return undefined;
+    const target = graph.redirects[specifier];
+    return target === specifier.slice(0, hash) ? target : undefined;
+  };
+
+  // `@deno/graph` models URL fragments as redirects even though Deno gives each fragment its own module instance.
+  // Preserve those aliases while following actual redirects transitively.
   const follow = (specifier: string | undefined): string | undefined => {
     let current = specifier;
-    while (current !== undefined && graph.redirects[current] !== undefined) current = graph.redirects[current];
+    while (
+      current !== undefined && graph.redirects[current] !== undefined && fragmentTarget(current) === undefined
+    ) current = graph.redirects[current];
     return current;
   };
   const modules: RawModule[] = graph.modules.map((m) => ({
@@ -105,6 +114,12 @@ export async function loadGraph(plan: Plan): Promise<RawGraph> {
       resolved: follow(d.code?.specifier ?? d.type?.specifier),
     })),
   }));
+  const moduleBySpecifier = new Map(modules.map((module) => [module.specifier, module]));
+  for (const alias of Object.keys(graph.redirects)) {
+    const target = fragmentTarget(alias);
+    if (target === undefined) continue;
+    modules.push({ ...moduleBySpecifier.get(target)!, specifier: alias });
+  }
 
   // HACK:
   // @deno/graph mutates loader responses while flattening modules,

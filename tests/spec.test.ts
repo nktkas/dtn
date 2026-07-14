@@ -52,6 +52,18 @@ Deno.test("vendoredRel — portable media-aware URL identity", async (t) => {
     );
     assertNotEquals(
       vendoredRel(base, "_deps", "TypeScript"),
+      vendoredRel(`${base}?`, "_deps", "TypeScript"),
+    );
+    assertNotEquals(
+      vendoredRel(base, "_deps", "TypeScript"),
+      vendoredRel(`${base}#`, "_deps", "TypeScript"),
+    );
+    assertNotEquals(
+      vendoredRel(`${base}#a`, "_deps", "TypeScript"),
+      vendoredRel(`${base}?#a`, "_deps", "TypeScript"),
+    );
+    assertNotEquals(
+      vendoredRel(base, "_deps", "TypeScript"),
       vendoredRel(base, "_deps", "JavaScript"),
     );
     assertNotEquals(

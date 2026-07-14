@@ -92,8 +92,12 @@ export function vendoredRel(
   const segments = portableComponents("h", u.host);
   const pathname = u.pathname.startsWith("/") ? u.pathname.slice(1) : u.pathname;
   for (const segment of pathname.split("/")) segments.push(...portableComponents("p", segment));
-  if (u.search !== "") segments.push(...portableComponents("q", u.search.slice(1)));
-  if (u.hash !== "") segments.push(...portableComponents("f", u.hash.slice(1)));
+  const query = u.href.indexOf("?");
+  const hash = u.href.indexOf("#");
+  if (query !== -1 && (hash === -1 || query < hash)) {
+    segments.push(...portableComponents("q", u.href.slice(query + 1, hash === -1 ? undefined : hash)));
+  }
+  if (hash !== -1) segments.push(...portableComponents("f", u.href.slice(hash + 1)));
 
   let extension = ".js";
   if (media === "TypeScript") extension = ".ts";

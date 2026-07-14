@@ -290,6 +290,78 @@ Deno.test("integration — local and remote MTS emit Node ESM artifacts", async 
   }
 });
 
+Deno.test("integration — HTTP fragments preserve module identity without overriding redirects", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (request) => {
+    const url = new URL(request.url);
+    if (url.pathname === "/redirect.ts") return Response.redirect(new URL("/final.ts", url), 302);
+    if (url.pathname === "/data.json") {
+      return new Response(`{ "value": 1 }`, { headers: { "content-type": "application/json" } });
+    }
+    const source = url.pathname === "/helper.ts"
+      ? `export const helper = 1;\n`
+      : `import { helper } from "./helper.ts";\nexport const token = { helper };\n`;
+    return new Response(source, {
+      headers: { "content-type": "application/typescript" },
+    });
+  });
+  try {
+    const base = `http://127.0.0.1:${server.addr.port}`;
+    const directPlain = `${base}/direct.ts`;
+    const directEmptyQuery = `${base}/direct.ts?`;
+    const directEmpty = `${base}/direct.ts#`;
+    const directA = `${base}/direct.ts#a`;
+    const directEmptyQueryA = `${base}/direct.ts?#a`;
+    const directB = `${base}/direct.ts#b`;
+    const redirectA = `${base}/redirect.ts#a`;
+    const redirectB = `${base}/redirect.ts#b`;
+    const jsonA = `${base}/data.json#a`;
+    const jsonB = `${base}/data.json#b`;
+    await withBuild(
+      {
+        "deno.json": JSON.stringify({ name: "@fx/fragments", version: "1.0.0", exports: "./src/mod.ts" }),
+        "src/mod.ts": `import { token as directPlain } from ${JSON.stringify(directPlain)};\n` +
+          `import { token as directEmptyQuery } from ${JSON.stringify(directEmptyQuery)};\n` +
+          `import { token as directEmpty } from ${JSON.stringify(directEmpty)};\n` +
+          `import { token as directA } from ${JSON.stringify(directA)};\n` +
+          `import { token as directEmptyQueryA } from ${JSON.stringify(directEmptyQueryA)};\n` +
+          `import { token as directB } from ${JSON.stringify(directB)};\n` +
+          `import { token as redirectA } from ${JSON.stringify(redirectA)};\n` +
+          `import { token as redirectB } from ${JSON.stringify(redirectB)};\n` +
+          `import jsonA from ${JSON.stringify(jsonA)} with { type: "json" };\n` +
+          `import jsonB from ${JSON.stringify(jsonB)} with { type: "json" };\n` +
+          `export const directDistinct = ` +
+          `new Set([directPlain, directEmptyQuery, directEmpty, directA, directEmptyQueryA, directB]).size === 6;\n` +
+          `export const jsonDistinct = jsonA !== jsonB;\n` +
+          `export const redirectSame = redirectA === redirectB;\n`,
+      },
+      { outDir: "dist" },
+      async ({ dir, error }) => {
+        assertEquals(error, null, error?.message);
+        for (const remote of [directPlain, directEmptyQuery, directEmpty, directA, directEmptyQueryA, directB]) {
+          const emit = tsToJs(vendoredRel(remote, "_deps", "TypeScript"));
+          const map = JSON.parse(await Deno.readTextFile(join(dir, "dist/esm", `${emit}.map`)));
+          assertEquals(map.sources, [remote]);
+        }
+        assertEquals(
+          await runCommand(
+            "node",
+            [
+              "--input-type=module",
+              "--eval",
+              `const result = await import("./dist/esm/mod.js"); ` +
+              `console.log([result.directDistinct, result.jsonDistinct, result.redirectSame].join(":"));`,
+            ],
+            dir,
+          ),
+          "true:true:true",
+        );
+      },
+    );
+  } finally {
+    await server.shutdown();
+  }
+});
+
 Deno.test("integration — local JavaScript, MJS, and declaration dependencies are copied", async () => {
   await withBuild(
     {
