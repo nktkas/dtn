@@ -143,6 +143,30 @@ Deno.test("integration — local project emits ESM, declarations, corrected maps
   );
 });
 
+Deno.test("integration — option-like source paths remain positional transpile inputs", async () => {
+  await withBuild(
+    {
+      "deno.json": JSON.stringify({ name: "@fx/option-path", version: "1.0.0", exports: "./--entry.ts" }),
+      "--entry.ts": `export const value = 51 as const;\n`,
+    },
+    { outDir: "dist" },
+    async ({ dir, error }) => {
+      assertEquals(error, null, error?.message);
+      for (const file of ["--entry.js", "--entry.d.ts", "--entry.js.map"]) {
+        assert(await exists(join(dir, "dist/esm", file)), `missing ${file}`);
+      }
+      assertEquals(
+        await runCommand(
+          "node",
+          ["--input-type=module", "--eval", `console.log((await import("./dist/esm/--entry.js")).value)`],
+          dir,
+        ),
+        "51",
+      );
+    },
+  );
+});
+
 Deno.test("integration — escaped and query-bearing local specifiers resolve through graph edges", async () => {
   await withBuild(
     {

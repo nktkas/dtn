@@ -158,6 +158,7 @@ export async function transpile(options: TranspileOptions): Promise<void> {
       "separate",
       "--outdir",
       options.outDir,
+      "--",
       ...options.files,
     ], options.cwd);
 
