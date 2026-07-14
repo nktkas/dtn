@@ -102,8 +102,8 @@ The original platform or library error is available through `error.cause` when o
 The intentionally supported scope is narrower than Deno's module system:
 
 - **Import-map `scopes` are unsupported; aliases may target only `jsr:` or `npm:` packages.**
-- **Local modules support TypeScript, MTS, JavaScript, MJS, JSON, and declarations; vendored remote modules support
-  TypeScript, MTS, JavaScript, MJS, and declarations.**
+- **Local modules support `.ts`, `.mts`, `.js`, `.mjs`, `.json`, `.d.ts`, `.d.mts`, and `.d.cts`; vendored remote
+  modules support the same forms except JSON. TSX, JSX, CommonJS, and Wasm are unsupported.**
 - **Only static ESM, string-literal runtime `import()`, and TypeScript `import()` type specifiers are rewritten;
   computed runtime `import()`, `import.meta.resolve()`, CommonJS, TypeScript `import = require`, module
   declarations/augmentations, triple-slash references, and JavaScript JSDoc are not.**
