@@ -5,7 +5,7 @@
   "exports": "./mod.ts",
   "imports": {
     "@deno/cache-dir": "jsr:@deno/cache-dir@^0.27.0",
-    "@deno/graph": "jsr:@deno/graph@^0.110.2",
+    "@deno/graph": "jsr:@deno/graph@^0.111.0",
     "@std/fs": "jsr:@std/fs@^1.0.24",
     "@std/path": "jsr:@std/path@^1.1.6",
     "@jridgewell/sourcemap-codec": "npm:@jridgewell/sourcemap-codec@^1.5.5",
