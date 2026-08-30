@@ -1,11 +1,12 @@
 # @nktkas/dtn
 
 [![JSR](https://jsr.io/badges/@nktkas/dtn)](https://jsr.io/@nktkas/dtn)
-[![coveralls](https://img.shields.io/coverallsCoverage/github/nktkas/dtn)](https://coveralls.io/github/nktkas/dtn)
 
-Deno to Node — build a Deno project into a Node-compatible project (no bundling).
+`dtn` (Deno To Node) — Builds a [Deno](https://deno.com/) library into a [Node](https://nodejs.org/) package ready to
+publish to npm, using [`deno info`](https://docs.deno.com/runtime/reference/cli/info/) for resolution and
+[`typescript`](https://www.npmjs.com/package/typescript) for emit.
 
-## Install (Deno 2.9+)
+## Install
 
 ```
 deno add jsr:@nktkas/dtn
@@ -14,9 +15,8 @@ deno add jsr:@nktkas/dtn
 ## Usage
 
 ```ts ignore
-import { build } from "@nktkas/dtn";
-import denoJson from "./deno.json" with { type: "json" };
-// -> {
+// deno.json
+// {
 //   "name": "@scope/lib",
 //   "version": "1.0.0",
 //   "exports": "./src/mod.ts",
@@ -26,120 +26,149 @@ import denoJson from "./deno.json" with { type: "json" };
 //   }
 // }
 
+import { build } from "@nktkas/dtn";
+import denoJson from "./deno.json" with { type: "json" };
+
 await build({
   outDir: "dist",
   denoJson,
   npmReplacements: { "@valibot/valibot": "valibot" },
-  copyFiles: ["README.md", "LICENSE"],
 });
+
 // dist/
-// ├── README.md
-// ├── LICENSE
-// ├── package.json
+// ├── package.json  (generated fields, "valibot" among the dependencies)
+// ├── tsconfig.json
 // └── esm/
 //     ├── mod.js  (+ mod.js.map, mod.d.ts)
 //     ├── _deps/jsr.io/@std/encoding/1.0.0/hex.js  (+ hex.js.map, hex.d.ts)
-//     └── ...     other local files related to mod.js
+//     └── ...  (other local files related to mod.js)
 ```
 
-## Config
+## Options
 
-```ts
-interface BuildConfig {
-  /** Output directory, relative to the project root. */
+````ts
+interface BuildOptions {
+  /**
+   * Output directory, resolved against the current working directory.
+   *
+   * WARNING: the directory is removed, with everything inside it, before the build writes anything.
+   */
   outDir: string;
-  /** Project root against which relative paths resolve. @default Deno.cwd() */
+  /**
+   * Project root that entry points resolve against.
+   *
+   * @default `Deno.cwd()`
+   */
   root?: string;
-  /** Package facts from `deno.json`. */
+  /**
+   * The project config to build from.
+   *
+   * @see https://docs.deno.com/runtime/fundamentals/configuration/
+   */
   denoJson: {
     name: string;
     version: string;
-    /** Explicit runtime `.ts` entry or subpath map; wildcards and `.d.ts`-only entries are unsupported. */
     exports: string | Record<string, string>;
-    /** Aliases targeting `jsr:` or `npm:` packages. */
     imports?: Record<string, string>;
+    scopes?: Record<string, Record<string, string>>;
+    importMap?: string;
+    nodeModulesDir?: "auto" | "manual" | "none" | boolean;
+    compilerOptions?: Record<string, unknown>;
   };
   /**
-   * Replaces an import-map alias — which must resolve to a `jsr:`/`npm:` specifier — with an npm package instead of
-   * vendoring it, given as `"name"` or `"name@version"`; an omitted version is taken from that specifier.
+   * Import-map aliases installed from npm instead of being copied into the package.
+   *
+   * Every other JSR or HTTPS dependency is copied into {@linkcode BuildOptions.depsDir}.
+   *
+   * @example
+   * ```ts
+   * // deno.json holds "@hono/hono": "jsr:@hono/hono@^4.6.3"
+   * { "@hono/hono": "hono" }   // => import "@hono/hono/jsx"  ->  import "hono/jsx"
+   * ```
    */
   npmReplacements?: Record<string, string>;
-  /** Fields merged into the generated `package.json`; dtn-generated values take precedence. */
-  packageJson?: PackageJson;
-  /** Files copied verbatim into the package root. */
-  copyFiles?: string[];
-  /** Directory under the package code root that holds inlined (vendored) dependencies. @default "_deps" */
+  /** Fields merged into the generated `package.json`, over the fields the build writes itself. */
+  packageJson?: Record<string, unknown>;
+  /**
+   * Directory under each module-kind tree holding the dependencies copied into the package.
+   *
+   * @default `"_deps"`
+   */
   depsDir?: string;
+  /**
+   * Whether to write a source map beside each module, with the TypeScript source inside it.
+   *
+   * @default `true`
+   */
+  sourceMap?: boolean;
+  /**
+   * The module kinds the package holds.
+   * - `"esm"`: ESM alone, in `esm/`.
+   * - `"cjs"`: CommonJS alone, in `cjs/`.
+   * - `"both"`: ESM in `esm/` and CommonJS in `cjs/`.
+   *
+   * @default `"esm"`
+   */
+  modules?: "esm" | "cjs" | "both";
 }
-```
+````
 
 ## Errors
 
-`build()` throws a `BuildError` with a machine-readable `code` and, when known, the offending `subject`:
+`build()` throws a `BuildError` carrying a machine-readable `code`:
 
 ```ts ignore
 import { build, BuildError } from "@nktkas/dtn";
+import denoJson from "./deno.json" with { type: "json" };
 
 try {
-  await build(config);
+  await build({ outDir: "dist", denoJson });
 } catch (e) {
-  if (e instanceof BuildError && e.code === "INVALID_CONFIG") { /* ... */ }
+  if (e instanceof BuildError && e.code === "INVALID_CONFIG") console.error(e.message);
 }
 ```
 
-| `code`               | Raised when                                                                     |
-| -------------------- | ------------------------------------------------------------------------------- |
-| `INVALID_CONFIG`     | Exports, registry aliases, or npm replacements violate the supported contract.  |
-| `UNSUPPORTED_MODULE` | A reachable module has an unsupported media type.                               |
-| `DEPENDENCY_FAILED`  | Loading/resolution fails, npm requirements conflict, or vendored paths overlap. |
-| `EMIT_FAILED`        | Transpilation, expected artifacts, rewriting, or source maps fail.              |
-| `BUILD_FAILED`       | Another platform or library operation fails.                                    |
-
-The original platform or library error is available through `error.cause` when one exists.
+| `code`                | Raised when                                                       |
+| --------------------- | ----------------------------------------------------------------- |
+| `INVALID_CONFIG`      | The project's imports, versions and installed packages disagree.  |
+| `DEPENDENCY_FAILED`   | A `deno` command fails, or reports a module it could not load.    |
+| `EMIT_FAILED`         | `tsc` refuses to produce the package's modules and declarations.  |
+| `UNSHIPPABLE_PACKAGE` | The modules resolve, but the package they would make cannot load. |
+| `IO_FAILED`           | The file system or the runtime refuses the build something.       |
+| `UNKNOWN_ERROR`       | The build breaks on anything else.                                |
 
 ## Limitations
 
-The intentionally supported scope is narrower than Deno's module system:
-
-- **Import-map `scopes` are unsupported; aliases may target only `jsr:` or `npm:` packages.**
-- **Local and vendored remote modules support `.ts`, `.mts`, `.js`, `.mjs`, `.json`, `.d.ts`, `.d.mts`, and `.d.cts`.
-  TSX, JSX, CommonJS, and Wasm are unsupported.**
-- **Specifier rewriting covers static ESM, string-literal runtime `import()`, TypeScript `import()` types, and
-  string-literal module declarations/augmentations; computed runtime `import()`, `import.meta.resolve()`, CommonJS,
-  TypeScript `import = require`, triple-slash references, and JavaScript JSDoc are not covered.**
-- **Remote type-sidecar directives (`@ts-types`/`@deno-types`/`@ts-self-types`) are unsupported.**
-- **Vendored URLs whose package paths overlap are rejected.**
-- **Generated absolute `file:` imports fail; use explicit type annotations.**
-- **Deno runtime APIs are not shimmed for Node.**
-- **Dependency graph resolution ignores `deno.lock`.**
-- **Only transpiled TypeScript gets source maps; copied JavaScript/MJS maps and mapping directives are omitted.**
-- **Validation and graph analysis preserve existing output; emission failures may leave partial output.**
+- **The input is a valid Deno project with APIs that are supported in Node; anything else fails loudly, or is quietly
+  built into an invalid Node package ([Deno APIs](https://docs.deno.com/api/deno/) are not shimmed and
+  [Web APIs](https://developer.mozilla.org/docs/Web/API) are not polyfilled).**
+- **A source is renamed to what Node reads, so `util.ts` and `util.js` both claim `esm/util.js` and cannot ship
+  together.**
 
 ## Alternatives
 
 ### [`deno pack`](https://docs.deno.com/runtime/reference/cli/pack/)
 
-Starting with [Deno 2.8](https://deno.com/blog/v2.8#deno-pack), a similar tool was added to build a Deno project into a
-publication-ready npm package.
+Starting with [Deno 2.8](https://deno.com/blog/v2.8#deno-pack), Deno builds a project into a publication-ready npm
+package itself.
 
-But it has some serious (for me) issues:
+But it has some serious issues, at least for me:
 
-- To convert a JSR import to its npm equivalent, you must first manually edit `deno.json#imports`.
-- After installing, the npm user needs to
-  [configure the `.npmrc`](https://docs.deno.com/runtime/reference/cli/pack/#specifier-rewriting) file in their project
-  to work with jsr dependencies.
-- [Slow types](https://docs.deno.com/runtime/reference/cli/pack/#allow-slow-types) are not supported; they will be
-  converted to `any`.
+- To convert a JSR import to its npm equivalent, you must first manually edit `deno.json#imports`, and the alias itself
+  has to be the npm package's name: `deno pack` leaves every alias in the code as written.
+- JSR dependencies are not copied into the package: they ship as `@jsr/*` npm dependencies, which need an
+  [`.npmrc`](https://docs.deno.com/runtime/reference/cli/pack/#specifier-rewriting).
+- [Slow types](https://docs.deno.com/runtime/reference/cli/pack/#allow-slow-types) are not supported and are converted
+  to `any`.
 
 ### [`dnt`](https://github.com/denoland/dnt)
 
-A popular tool for converting a Deno project into a Node-compatible project.
+Deno's own tool for the same job, older than `deno pack` and still maintained, if rarely updated.
 
-But it also has a few issues:
+Complete as the library is, it has issues of its own:
 
-- Does not support a mapping from JSR imports to their npm equivalents; requires manual modification of
-  `deno.json#imports` beforehand (https://github.com/denoland/dnt/issues/437)
-- Most likely, active support has been suspended (based on: the latest git commit date and the number of active issues)
+- WebAssembly modules are unsupported ([#439](https://github.com/denoland/dnt/issues/439)).
+- A JSON module ships as JavaScript, so the `.json` file itself is not in the package.
 
 ## License
 
