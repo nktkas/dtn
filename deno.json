@@ -11,7 +11,7 @@
     "@std/path": "jsr:@std/path@^1.1.6",
     "@std/semver": "jsr:@std/semver@^1.0.8",
     "sort-package-json": "npm:sort-package-json@^4.0.0",
-    "typescript": "npm:typescript@^6.0.3"
+    "typescript": "npm:typescript@^7.0.2"
   },
   "tasks": {
     "check": "deno fmt --check && deno lint && deno check"
