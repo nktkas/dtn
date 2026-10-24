@@ -10,7 +10,7 @@
     "@std/fs": "jsr:@std/fs@^1.0.19",
     "@std/path": "jsr:@std/path@^1.1.6",
     "@std/semver": "jsr:@std/semver@^1.0.8",
-    "sort-package-json": "npm:sort-package-json@^4.0.0",
+    "sort-package-json": "npm:sort-package-json@^4.1.0",
     "typescript": "npm:typescript@^6.0.3"
   },
   "tasks": {
